@@ -6,6 +6,7 @@ const elements = {
     senderJob: $('#sender-job'),
     senders: $('#senders'),
     target: $('#target'),
+    targetFiles: $('#target-files'),
     upload: $('#upload'),
     senderSelect: $('#sender-select'),
     scanForm: $('#scan-form'),
@@ -83,6 +84,24 @@ const refreshTargets = async () => {
     elements.target.replaceChildren(...targets.map(name => makeOption(name, name)));
     if (targets.includes(selected)) elements.target.value = selected;
     if (!targets.length) elements.target.append(makeOption('', 'Upload a target list to continue'));
+    elements.targetFiles.replaceChildren();
+    if (!targets.length) {
+        elements.targetFiles.textContent = 'No target lists are available.';
+    } else {
+        for (const filename of targets) {
+            const row = document.createElement('div');
+            row.className = 'list-row';
+            const name = document.createElement('span');
+            name.textContent = filename;
+            const remove = document.createElement('button');
+            remove.className = 'text-button danger';
+            remove.type = 'button';
+            remove.textContent = 'Remove';
+            remove.addEventListener('click', () => deleteTarget(filename));
+            row.append(name, remove);
+            elements.targetFiles.append(row);
+        }
+    }
     updateCheckpoint();
 };
 
@@ -135,7 +154,15 @@ const refreshReports = async () => {
         download.className = 'text-button';
         download.href = `/api/reports/${encodeURIComponent(filename)}`;
         download.textContent = 'Download ↓';
-        row.append(name, download);
+        const remove = document.createElement('button');
+        remove.className = 'text-button danger';
+        remove.type = 'button';
+        remove.textContent = 'Remove';
+        remove.addEventListener('click', () => deleteReport(filename));
+        const actions = document.createElement('div');
+        actions.className = 'row-actions';
+        actions.append(download, remove);
+        row.append(name, actions);
         elements.reports.append(row);
     }
 };
@@ -172,6 +199,36 @@ const deleteSender = async (folder) => {
         });
         await refreshSenders();
         showMessage(`${folder} was removed.`);
+    } catch (error) {
+        showMessage(error.message, true);
+    }
+};
+
+const deleteTarget = async (filename) => {
+    if (!window.confirm(`Remove "${filename}" and its checkpoint? Generated reports will not be affected.`)) return;
+    try {
+        await request(`/api/targets/${encodeURIComponent(filename)}/delete`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ confirm: true })
+        });
+        await refreshTargets();
+        showMessage(`Target list "${filename}" was removed.`);
+    } catch (error) {
+        showMessage(error.message, true);
+    }
+};
+
+const deleteReport = async (filename) => {
+    if (!window.confirm(`Permanently remove "${filename}"?`)) return;
+    try {
+        await request(`/api/reports/${encodeURIComponent(filename)}/delete`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ confirm: true })
+        });
+        await refreshReports();
+        showMessage(`"${filename}" was removed.`);
     } catch (error) {
         showMessage(error.message, true);
     }

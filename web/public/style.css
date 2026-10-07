@@ -54,6 +54,10 @@ input:focus, select:focus { border-color: #68b394; box-shadow: 0 0 0 3px #1b9562
 .sr-only { position: absolute; width: 1px; height: 1px; clip: rect(0, 0, 0, 0); overflow: hidden; }
 .stack { display: grid; gap: 9px; }
 .stack > label { margin-top: 5px; color: #58675f; font-size: 11px; font-weight: 700; }
+.target-list-heading { margin-top: 4px; color: #58675f; font-size: 10px; }
+.target-files { max-height: 120px; overflow-y: auto; }
+.target-files:empty { display: none; }
+.target-files:not(:has(.list-row)) { color: var(--muted); font-size: 11px; }
 .stack .inline-form select { flex: 1; }
 .stack .inline-form .button { flex-shrink: 0; }
 .status-pill { padding: 6px 9px; border-radius: 20px; color: #617168; background: #f0f3f1; font-size: 10px; font-weight: 700; }

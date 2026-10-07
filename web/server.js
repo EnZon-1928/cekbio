@@ -179,6 +179,25 @@ const routeRequest = async (req, res) => {
         fs.createReadStream(path.join(process.cwd(), filename)).pipe(res);
         return;
     }
+    if (method === 'POST' && pathname.startsWith('/api/reports/') && pathname.endsWith('/delete')) {
+        if (scanJob?.status === 'starting' || scanJob?.status === 'running') {
+            sendJson(res, 409, { error: 'Reports cannot be removed while a scan is in progress.' });
+            return;
+        }
+        const filename = pathname.slice('/api/reports/'.length, -'/delete'.length);
+        const body = await readJsonBody(req);
+        if (body.confirm !== true) {
+            sendJson(res, 400, { error: 'Explicit confirmation is required to remove a report.' });
+            return;
+        }
+        if ((!REPORT_PATTERN.test(filename) && !TARGET_DATA_PATTERN.test(filename)) || !listDownloads().includes(filename)) {
+            sendJson(res, 404, { error: 'Report not found.' });
+            return;
+        }
+        fs.unlinkSync(path.join(process.cwd(), filename));
+        sendJson(res, 200, { deleted: filename });
+        return;
+    }
 
     if (method === 'POST' && pathname === '/api/targets') {
         const body = await readJsonBody(req, MAX_UPLOAD_BYTES + 64 * 1024);
@@ -209,6 +228,28 @@ const routeRequest = async (req, res) => {
             throw error;
         }
         sendJson(res, 201, { target: filename });
+        return;
+    }
+    if (method === 'POST' && pathname.startsWith('/api/targets/') && pathname.endsWith('/delete')) {
+        if (scanJob?.status === 'starting' || scanJob?.status === 'running') {
+            sendJson(res, 409, { error: 'Target lists cannot be removed while a scan is in progress.' });
+            return;
+        }
+        const filename = pathname.slice('/api/targets/'.length, -'/delete'.length);
+        const body = await readJsonBody(req);
+        if (body.confirm !== true) {
+            sendJson(res, 400, { error: 'Explicit confirmation is required to remove a target list.' });
+            return;
+        }
+        if (!listTargets().includes(filename)) {
+            sendJson(res, 404, { error: 'Target list not found.' });
+            return;
+        }
+        fs.unlinkSync(path.join(process.cwd(), filename));
+        const checkpointFile = path.join(process.cwd(), `checkpoint_${filename.replace('.txt', '')}.json`);
+        const checkpointDeleted = fs.existsSync(checkpointFile);
+        if (checkpointDeleted) fs.unlinkSync(checkpointFile);
+        sendJson(res, 200, { deleted: filename, checkpointDeleted });
         return;
     }
 
