@@ -26,7 +26,7 @@ const elements = {
 $('#check-all').addEventListener('click', async () => {
     try {
         await request('/api/senders/check-all', { method: 'POST' });
-        showMessage('Pengecekan semua sender dimulai.');
+        showMessage('Sender check started.');
         pollStatus();
     } catch (error) {
         showMessage(error.message, true);
@@ -34,14 +34,14 @@ $('#check-all').addEventListener('click', async () => {
 });
 
 $('#clean-senders').addEventListener('click', async () => {
-    if (!window.confirm('Cek semua sender dan hapus yang timeout, banned, atau logout?')) return;
+    if (!window.confirm('Check all senders and remove those that time out, are banned, or are logged out?')) return;
     try {
         await request('/api/senders/clean', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ confirm: true })
         });
-        showMessage('Pengecekan dan pembersihan sender dimulai.');
+        showMessage('Sender check and cleanup started.');
         pollStatus();
     } catch (error) {
         showMessage(error.message, true);
@@ -57,7 +57,7 @@ const request = async (url, options) => {
     const result = response.headers.get('content-type')?.includes('application/json')
         ? await response.json()
         : null;
-    if (!response.ok) throw new Error(result?.error || `Request gagal (${response.status}).`);
+    if (!response.ok) throw new Error(result?.error || `Request failed (${response.status}).`);
     return result;
 };
 
@@ -82,7 +82,7 @@ const refreshTargets = async () => {
     const selected = elements.target.value;
     elements.target.replaceChildren(...targets.map(name => makeOption(name, name)));
     if (targets.includes(selected)) elements.target.value = selected;
-    if (!targets.length) elements.target.append(makeOption('', 'Unggah file target terlebih dahulu'));
+    if (!targets.length) elements.target.append(makeOption('', 'Upload a target list to continue'));
     updateCheckpoint();
 };
 
@@ -92,8 +92,8 @@ const refreshSenders = async () => {
     elements.senders.replaceChildren();
     elements.senderSelect.replaceChildren(...senders.map(name => makeOption(name, name.replace('_', ' '))));
     if (!senders.length) {
-        elements.senders.textContent = 'Belum ada sender. Tambahkan sender untuk mulai.';
-        elements.senderSelect.append(makeOption('', 'Belum ada sender'));
+        elements.senders.textContent = 'No sender sessions found. Add a sender to get started.';
+        elements.senderSelect.append(makeOption('', 'No sender sessions available'));
         return;
     }
     for (const folder of senders) {
@@ -106,12 +106,12 @@ const refreshSenders = async () => {
         const check = document.createElement('button');
         check.className = 'text-button';
         check.type = 'button';
-        check.textContent = 'Cek';
+        check.textContent = 'Check';
         check.addEventListener('click', () => checkSender(folder));
         const remove = document.createElement('button');
         remove.className = 'text-button danger';
         remove.type = 'button';
-        remove.textContent = 'Hapus';
+        remove.textContent = 'Remove';
         remove.addEventListener('click', () => deleteSender(folder));
         actions.append(check, remove);
         row.append(name, actions);
@@ -123,7 +123,7 @@ const refreshReports = async () => {
     const { reports } = await request('/api/reports');
     elements.reports.replaceChildren();
     if (!reports.length) {
-        elements.reports.textContent = 'Belum ada laporan.';
+        elements.reports.textContent = 'No reports are available yet.';
         return;
     }
     for (const filename of reports) {
@@ -134,7 +134,7 @@ const refreshReports = async () => {
         const download = document.createElement('a');
         download.className = 'text-button';
         download.href = `/api/reports/${encodeURIComponent(filename)}`;
-        download.textContent = 'Unduh ↓';
+        download.textContent = 'Download ↓';
         row.append(name, download);
         elements.reports.append(row);
     }
@@ -147,15 +147,15 @@ const updateCheckpoint = () => {
     elements.resume.checked = !checkpoint?.invalid;
     if (checkpoint) {
         elements.checkpointInfo.textContent = checkpoint.invalid
-            ? 'Checkpoint tidak terbaca; sesuai alur lama, scan berikutnya akan mulai dari awal.'
-            : `Batch terakhir ${checkpoint.batchIndex} dari ${checkpoint.totalBatches}.`;
+            ? 'The checkpoint could not be read. The next scan will start from the beginning.'
+            : `Last completed batch: ${checkpoint.batchIndex} of ${checkpoint.totalBatches}.`;
     }
 };
 
 const checkSender = async (folder) => {
     try {
         await request(`/api/senders/${encodeURIComponent(folder)}/check`, { method: 'POST' });
-        showMessage(`Pengecekan ${folder} dimulai.`);
+        showMessage(`Sender check started for ${folder}.`);
         pollStatus();
     } catch (error) {
         showMessage(error.message, true);
@@ -163,7 +163,7 @@ const checkSender = async (folder) => {
 };
 
 const deleteSender = async (folder) => {
-    if (!window.confirm(`Hapus sesi ${folder}? Kredensial sesi lokal akan dihapus permanen.`)) return;
+    if (!window.confirm(`Remove ${folder}? Its local session credentials will be permanently deleted.`)) return;
     try {
         await request(`/api/senders/${encodeURIComponent(folder)}/delete`, {
             method: 'POST',
@@ -171,10 +171,79 @@ const deleteSender = async (folder) => {
             body: JSON.stringify({ confirm: true })
         });
         await refreshSenders();
-        showMessage(`${folder} dihapus.`);
+        showMessage(`${folder} was removed.`);
     } catch (error) {
         showMessage(error.message, true);
     }
+};
+
+const senderStatusLabels = {
+    running: 'In progress',
+    starting: 'Starting',
+    completed: 'Completed',
+    connected: 'Connected',
+    alive: 'Connected',
+    failed: 'Failed',
+    error: 'Error',
+    timeout: 'Timed out',
+    'timeout/dead': 'Timed out or unavailable',
+    'banned/logged_out': 'Banned or logged out'
+};
+
+const formatScanLog = ({ timestamp, context, message }) => {
+    const batch = message.match(/^scanning batch (\d+)\/(\d+) \((\d+) targets\)\.\.\.$/);
+    if (batch) {
+        return `[${timestamp}] INFO  Scanning batch ${batch[1]} of ${batch[2]} (${batch[3]} targets).`;
+    }
+
+    const saved = message.match(/^\[auto-save\] sorting and writing data \(batch (\d+)\)\.\.\.$/);
+    if (saved) return `[${timestamp}] INFO  Saving results after batch ${saved[1]}.`;
+
+    const cooldown = message.match(/^cooling down ([\d.]+) seconds\.\.\.$/);
+    if (cooldown) return `[${timestamp}] INFO  Cooling down for ${cooldown[1]} seconds.`;
+
+    const hit = message.match(/^\[(.+?)\] => (.+)$/);
+    if (context === 'hit' && hit) {
+        const accountType = hit[2] === 'regular personal'
+            ? 'Personal account found'
+            : hit[2] === '[official/verified]'
+                ? 'Verified business account found'
+                : hit[2] === '[regular business]'
+                    ? 'Business account found'
+                    : `${hit[2]} account found`;
+        return `[${timestamp}] MATCH ${accountType}: ${hit[1]}.`;
+    }
+
+    const summary = message.match(/^\[report\] business: (\d+) \| personal: (\d+) \| unregistered: (\d+)\+\+$/);
+    if (summary) {
+        return `[${timestamp}] DONE  Scan summary — business: ${summary[1]}, personal: ${summary[2]}, unregistered: ${summary[3]}.`;
+    }
+
+    if (message === 'scanning process completed.') return `[${timestamp}] DONE  Scan completed.`;
+    if (message === '[memory dump] saving remaining data to disk...') {
+        return `[${timestamp}] INFO  Saving remaining results to disk.`;
+    }
+
+    if (message.startsWith('raw query error [')) {
+        const number = message.match(/^raw query error \[(.+?)\]/)?.[1];
+        return `[${timestamp}] WARN  Could not retrieve the business profile${number ? ` for ${number}` : ''}.`;
+    }
+    if (message.startsWith('timeout fetch bio status [')) {
+        const number = message.match(/^timeout fetch bio status \[(.+?)\]/)?.[1];
+        return `[${timestamp}] WARN  Could not retrieve the account status${number ? ` for ${number}` : ''}.`;
+    }
+    if (message.startsWith('batch scanning interrupted:')) {
+        const detail = message.split('\n')[1]?.trim();
+        return `[${timestamp}] ERROR Batch scanning was interrupted${detail ? `: ${detail}` : '.'}`;
+    }
+    if (message.startsWith('fatal scanner failure:')) {
+        const detail = message.split('\n')[1]?.trim();
+        return `[${timestamp}] ERROR Scan failed${detail ? `: ${detail}` : '.'}`;
+    }
+
+    const label = context === 'error' ? 'ERROR' : context === 'done' ? 'DONE' : 'INFO ';
+    const cleanMessage = message.split('\n')[0].trim();
+    return `[${timestamp}] ${label} ${cleanMessage}`;
 };
 
 const displayStatus = (result) => {
@@ -184,11 +253,11 @@ const displayStatus = (result) => {
         elements.senderJob.hidden = false;
         elements.senderJob.replaceChildren();
         const status = document.createElement('p');
-        status.textContent = sender.status === 'running' ? 'Operasi sender sedang berjalan...' : `Status sender: ${sender.status}`;
+        status.textContent = `Status: ${senderStatusLabels[sender.status] || sender.status}`;
         elements.senderJob.append(status);
         if (sender.sessionFolder) {
             const session = document.createElement('p');
-            session.textContent = `Sesi: ${sender.sessionFolder}`;
+            session.textContent = `Session: ${sender.sessionFolder}`;
             elements.senderJob.append(session);
         }
         if (sender.pairingCode) {
@@ -196,18 +265,21 @@ const displayStatus = (result) => {
             code.className = 'pairing-code';
             code.textContent = sender.pairingCode;
             elements.senderJob.append(code);
+            const pairingInstructions = document.createElement('p');
+            pairingInstructions.textContent = 'Enter this code in WhatsApp to link the sender.';
+            elements.senderJob.append(pairingInstructions);
         }
         if (sender.error) {
             const error = document.createElement('p');
             error.className = 'error-text';
-            error.textContent = sender.error;
+            error.textContent = `Error: ${sender.error}`;
             elements.senderJob.append(error);
         }
         if (sender.results?.length) {
             const results = document.createElement('ul');
             for (const result of sender.results) {
                 const item = document.createElement('li');
-                item.textContent = `${result.folder}: ${result.status}${result.deleted ? ' · dihapus' : ''}`;
+                item.textContent = `${result.folder}: ${senderStatusLabels[result.status] || result.status}${result.deleted ? ' · Removed' : ''}`;
                 results.append(item);
             }
             elements.senderJob.append(results);
@@ -215,24 +287,24 @@ const displayStatus = (result) => {
     }
     if (!scan) return;
     const labels = {
-        starting: 'Menyiapkan',
-        running: 'Berjalan',
-        completed: 'Selesai',
-        failed: 'Gagal'
+        starting: 'Preparing',
+        running: 'In progress',
+        completed: 'Completed',
+        failed: 'Failed'
     };
     elements.scanState.textContent = labels[scan.status] || scan.status;
     elements.scanState.className = `status-pill ${scan.status}`;
     elements.progress.hidden = false;
     elements.progressTitle.textContent = `${scan.targetFile} · ${scan.sessionFolder}`;
-    elements.progressCount.textContent = `${scan.currentBatch} / ${scan.totalBatches} batch`;
+    elements.progressCount.textContent = `${scan.currentBatch} of ${scan.totalBatches} batches`;
     const percent = scan.totalBatches ? Math.min(100, scan.currentBatch / scan.totalBatches * 100) : 0;
     elements.progressBar.style.width = `${percent}%`;
     elements.stats.textContent = scan.statistics
-        ? `Business ${scan.statistics.bioBusiness + scan.statistics.noBioBusiness} · Personal ${scan.statistics.personal} · Tidak terdaftar ${scan.statistics.unregistered}`
+        ? `Business: ${scan.statistics.bioBusiness + scan.statistics.noBioBusiness} · Personal: ${scan.statistics.personal} · Unregistered: ${scan.statistics.unregistered}`
         : '';
     elements.logs.textContent = scan.logs?.length
-        ? scan.logs.map(entry => `[${entry.timestamp}] ${entry.context}: ${entry.message}`).join('\n')
-        : 'Menunggu aktivitas scan...';
+        ? scan.logs.map(formatScanLog).join('\n')
+        : 'Waiting for scan activity...';
     elements.startScan.disabled = ['starting', 'running'].includes(scan.status);
     if (scan.status === 'failed' && scan.error) showMessage(scan.error, true);
     if (scan.status === 'completed') refreshReports().catch(error => showMessage(error.message, true));
@@ -265,7 +337,7 @@ elements.upload.addEventListener('change', async () => {
     if (!file) return;
     try {
         if (!file.name.toLowerCase().endsWith('.txt') || file.size > 10 * 1024 * 1024) {
-            throw new Error('Pilih file .txt berukuran maksimal 10 MB.');
+            throw new Error('Select a .txt file no larger than 10 MB.');
         }
         await request('/api/targets', {
             method: 'POST',
@@ -275,7 +347,7 @@ elements.upload.addEventListener('change', async () => {
         await refreshTargets();
         elements.target.value = file.name;
         updateCheckpoint();
-        showMessage(`${file.name} berhasil diunggah.`);
+        showMessage(`${file.name} uploaded successfully.`);
     } catch (error) {
         showMessage(error.message, true);
     } finally {
@@ -293,9 +365,9 @@ elements.senderForm.addEventListener('submit', async event => {
             body: JSON.stringify({ phoneNumber })
         });
         elements.senderJob.hidden = false;
-        elements.senderJob.textContent = 'Meminta pairing code...';
+        elements.senderJob.textContent = 'Requesting pairing code...';
         elements.senderForm.reset();
-        showMessage('Proses pairing dimulai.');
+        showMessage('Sender pairing started.');
         pollStatus();
     } catch (error) {
         showMessage(error.message, true);
@@ -306,7 +378,7 @@ elements.scanForm.addEventListener('submit', async event => {
     event.preventDefault();
     const form = new FormData(elements.scanForm);
     if (!form.get('targetFile') || !form.get('sessionFolder')) {
-        showMessage('Unggah file target dan tambahkan sender terlebih dahulu.', true);
+        showMessage('Upload a target list and add a sender before starting a scan.', true);
         return;
     }
     try {
@@ -321,7 +393,7 @@ elements.scanForm.addEventListener('submit', async event => {
             })
         });
         elements.startScan.disabled = true;
-        showMessage('Scan dimulai.');
+        showMessage('Scan started.');
         pollStatus();
     } catch (error) {
         showMessage(error.message, true);

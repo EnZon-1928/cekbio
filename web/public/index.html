@@ -1,23 +1,23 @@
 <!doctype html>
-<html lang="id">
+<html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>cekbio · Panel lokal</title>
+    <title>cekbio | WhatsApp Account Scanner</title>
     <link rel="stylesheet" href="/style.css">
     <script src="/app.js" defer></script>
 </head>
 <body>
     <header class="topbar">
-        <div class="brand"><span class="brand-mark">c</span><div><strong>cekbio</strong><small>Panel lokal</small></div></div>
-        <span class="local-badge"><i></i> hanya di komputer ini</span>
+        <div class="brand"><span class="brand-mark">c</span><div><strong>cekbio</strong><small>Local dashboard</small></div></div>
+        <span class="local-badge"><i></i> Running on this device</span>
     </header>
 
     <main>
         <section class="intro">
-            <p class="eyebrow">WHATSAPP SCANNER</p>
-            <h1>Semua alur, lebih mudah.</h1>
-            <p>Kelola sender, pilih daftar target, dan pantau proses dari satu tempat.</p>
+            <p class="eyebrow">WHATSAPP ACCOUNT SCANNER</p>
+            <h1>Manage your scanning workflow.</h1>
+            <p>Manage sender sessions, scan target lists, and review results from one dashboard.</p>
         </section>
 
         <div id="message" class="message" role="status" hidden></div>
@@ -25,18 +25,18 @@
         <section class="layout">
             <article class="card">
                 <div class="card-heading">
-                    <div><p class="eyebrow">01 / SENDER</p><h2>Perangkat terhubung</h2></div>
-                    <button id="refresh" class="icon-button" type="button" title="Muat ulang">↻</button>
+                    <div><p class="eyebrow">01 / SENDERS</p><h2>Sender sessions</h2></div>
+                    <button id="refresh" class="icon-button" type="button" title="Refresh dashboard">↻</button>
                 </div>
                 <form id="sender-form" class="inline-form">
-                    <label class="sr-only" for="phone">Nomor sender</label>
-                    <input id="phone" name="phoneNumber" type="tel" placeholder="Nomor, mis. 62812..." required>
-                    <button class="button secondary" type="submit">Tambah sender</button>
+                    <label class="sr-only" for="phone">Sender phone number</label>
+                    <input id="phone" name="phoneNumber" type="tel" placeholder="Phone number, e.g. 62812..." required>
+                    <button class="button secondary" type="submit">Add sender</button>
                 </form>
-                <p class="hint">Pairing code akan muncul di sini. Simpan sesi di perangkat yang sama.</p>
+                <p class="hint">The pairing code will appear here. Sender sessions are stored on this device.</p>
                 <div class="sender-tools">
-                    <button id="check-all" class="text-button" type="button">Cek semua sender</button>
-                    <button id="clean-senders" class="text-button danger" type="button">Bersihkan sender mati</button>
+                    <button id="check-all" class="text-button" type="button">Check all senders</button>
+                    <button id="clean-senders" class="text-button danger" type="button">Remove inactive senders</button>
                 </div>
                 <div id="sender-job" class="sender-job" hidden></div>
                 <div id="senders" class="list"></div>
@@ -44,45 +44,45 @@
 
             <article class="card scan-card">
                 <div class="card-heading">
-                    <div><p class="eyebrow">02 / SCAN</p><h2>Mulai pemindaian</h2></div>
-                    <span id="scan-state" class="status-pill">Siap</span>
+                    <div><p class="eyebrow">02 / SCAN</p><h2>Start a scan</h2></div>
+                    <span id="scan-state" class="status-pill">Ready</span>
                 </div>
                 <form id="scan-form" class="stack">
-                    <label for="target">Daftar target</label>
+                    <label for="target">Target list</label>
                     <div class="inline-form">
                         <select id="target" name="targetFile" required></select>
-                        <button id="upload-trigger" class="button secondary" type="button">Unggah .txt</button>
+                        <button id="upload-trigger" class="button secondary" type="button">Upload .txt</button>
                     </div>
                     <input id="upload" type="file" accept=".txt,text/plain" hidden>
                     <div id="checkpoint-box" class="checkpoint-box" hidden>
-                        <strong>Checkpoint ditemukan</strong>
+                        <strong>Checkpoint available</strong>
                         <span id="checkpoint-info"></span>
-                        <label class="check-label"><input id="resume" type="checkbox" checked> Lanjutkan dari checkpoint</label>
+                        <label class="check-label"><input id="resume" type="checkbox" checked> Resume from checkpoint</label>
                     </div>
-                    <label for="sender-select">Sender</label>
+                    <label for="sender-select">Sender session</label>
                     <select id="sender-select" name="sessionFolder" required></select>
-                    <label for="batch-size">Jumlah nomor per batch</label>
+                    <label for="batch-size">Numbers per batch</label>
                     <input id="batch-size" name="batchSize" type="number" min="1" value="50" required>
-                    <button id="start-scan" class="button primary" type="submit">Mulai scan</button>
+                    <button id="start-scan" class="button primary" type="submit">Start scan</button>
                 </form>
                 <div id="progress" class="progress-area" hidden>
-                    <div class="progress-label"><span id="progress-title">Menyiapkan...</span><span id="progress-count"></span></div>
+                    <div class="progress-label"><span id="progress-title">Preparing...</span><span id="progress-count"></span></div>
                     <div class="progress-track"><span id="progress-bar"></span></div>
                     <div id="stats" class="stats"></div>
                 </div>
-                <div class="logs-heading"><strong>Aktivitas</strong><span>Log scan terbaru</span></div>
-                <pre id="logs" class="logs">Belum ada aktivitas scan.</pre>
+                <div class="logs-heading"><strong>Scan activity</strong><span>Recent events</span></div>
+                <pre id="logs" class="logs">No scan activity yet.</pre>
             </article>
 
             <article class="card reports-card">
                 <div class="card-heading">
-                    <div><p class="eyebrow">03 / HASIL</p><h2>Laporan</h2></div>
+                    <div><p class="eyebrow">03 / RESULTS</p><h2>Reports</h2></div>
                 </div>
-                <p class="hint">Laporan teks dan hasil JSON tersimpan di folder aplikasi dan dapat diunduh di sini.</p>
+                <p class="hint">Generated text reports and JSON results are available for download here.</p>
                 <div id="reports" class="list"></div>
             </article>
         </section>
-        <footer>cekbio berjalan lokal · Sesi WhatsApp dan berkas tetap di komputer ini</footer>
+        <footer>cekbio runs locally · WhatsApp sessions and files remain on this device</footer>
     </main>
 </body>
 </html>
