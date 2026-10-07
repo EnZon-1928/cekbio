@@ -1,0 +1,104 @@
+// file: io/menu.js
+const readline = require('readline');
+const fs = require('fs');
+
+const { jalankanMesin } = require('../core/engine');
+const { tambahSender, eksekusiIntelijenSender } = require('../core/sender');
+
+const buatTanya = (rl) => (pertanyaan) => new Promise(resolve => rl.question(pertanyaan, resolve));
+
+const jalankanMenuUtama = async () => {
+    console.clear();
+    console.log('=== menu utama ===');
+    console.log('1. jalankan cekbio');
+    console.log('2. tambah sender baru');
+    console.log('3. kelola sender');
+    console.log('0. keluar');
+    console.log('==================');
+    
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const tanya = buatTanya(rl);
+
+    const pilihan = await tanya('pilih menu [0-3]: ');
+    
+    try {
+        if (pilihan === '1') {
+            rl.close();
+            // injeksi callback kembali ke menu murni tanpa merusak stabilitas
+            await jalankanMesin(jalankanMenuUtama);
+        } else if (pilihan === '2') {
+            rl.close();
+            await tambahSender();
+            console.log('\nkembali ke menu dalam 2 detik...');
+            setTimeout(jalankanMenuUtama, 2000);
+        } else if (pilihan === '3') {
+            rl.close();
+            await subMenuKelolaSender();
+        } else if (pilihan === '0') {
+            console.log('\nmematikan sistem...');
+            rl.close();
+            process.exit(0);
+        } else {
+            console.log('\npilihan tidak valid.');
+            rl.close();
+            setTimeout(jalankanMenuUtama, 1500);
+        }
+    } catch (e) {
+        console.log('\nerror fatal di menu utama:\n', e.stack);
+        rl.close();
+        setTimeout(jalankanMenuUtama, 3000);
+    }
+};
+
+const subMenuKelolaSender = async () => {
+    console.clear();
+    console.log('=== kelola sender ===');
+    
+    let folderSesi = [];
+    try {
+        folderSesi = fs.readdirSync('.').filter(f => f.startsWith('sesi_radar_'));
+    } catch (e) {
+        console.log('gagal melacak folder sesi:\n', e.stack);
+    }
+
+    console.log(`info: ${folderSesi.length} folder sender ditemukan.`);
+    console.log('1. cek status semua sender');
+    console.log('2. cek status sender spesifik');
+    console.log('3. hapus sender mati (banned/logout)');
+    console.log('0. kembali ke menu');
+    console.log('=====================');
+    
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const tanya = buatTanya(rl);
+    const pilihan = await tanya('pilih menu [0-3]: ');
+    
+    try {
+        if (pilihan === '1') {
+            rl.close();
+            await eksekusiIntelijenSender('semua', folderSesi);
+            setTimeout(subMenuKelolaSender, 4000);
+        } else if (pilihan === '2') {
+            const idSesi = await tanya('masukkan angka sesi (contoh: 1): ');
+            rl.close();
+            await eksekusiIntelijenSender('spesifik', idSesi);
+            setTimeout(subMenuKelolaSender, 4000);
+        } else if (pilihan === '3') {
+            rl.close();
+            await eksekusiIntelijenSender('bersih', folderSesi);
+            setTimeout(subMenuKelolaSender, 3000);
+        } else if (pilihan === '0') {
+            rl.close();
+            await jalankanMenuUtama();
+        } else {
+            console.log('\npilihan tidak valid.');
+            rl.close();
+            setTimeout(subMenuKelolaSender, 1500);
+        }
+    } catch (e) {
+        console.log('\nerror fatal di sub-menu:\n', e.stack);
+        rl.close();
+        setTimeout(subMenuKelolaSender, 3000);
+    }
+};
+
+module.exports = { jalankanMenuUtama };

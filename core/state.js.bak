@@ -1,0 +1,86 @@
+// file: core/state.js
+const fs = require('fs');
+const { logMinimal } = require('../utils/logger');
+
+// brankas memori mutlak, diet ram murni aktif
+const state = {
+    mesinBerjalan: false,
+    fileAmunisiAktif: '', 
+    gelombangIndex: 0,
+    gelombang: [],
+    targetBisnis: [],
+    targetPersonal: [],
+    targetBodong: [],
+    // logBisnis, logPersonal, dan logBodong resmi dihanguskan dari ram
+    statistik: { terdaftar: 0, bodong: 0, bioBisnis: 0, tanpaBioBisnis: 0, personal: 0 }
+};
+
+const simpanLaporanAman = () => {
+    try {
+        const waktuSelesai = new Date().toLocaleString('id-ID');
+        const namaBersih = state.fileAmunisiAktif ? state.fileAmunisiAktif.replace('.txt', '') : 'unknown';
+
+        if (state.fileAmunisiAktif) {
+            fs.writeFileSync(`posko_${namaBersih}.json`, JSON.stringify({
+                gelombangIndex: state.gelombangIndex,
+                totalGelombang: state.gelombang.length
+            }));
+        }
+
+        // 1. eksekusi brankas bisnis mutlak
+        state.targetBisnis.sort((a, b) => b.kasta - a.kasta);
+        const logBisnisSorted = state.targetBisnis.map(item => item.logString).filter(Boolean);
+
+        fs.writeFileSync(`target_bisnis_${namaBersih}.json`, JSON.stringify(state.targetBisnis, null, 4));
+        let isiBisnis = `╔═══════════════════════════════╗\n║ RADAR GATLING - WA BISNIS     ║\n╚═══════════════════════════════╝\n`;
+        isiBisnis += `∟ 📅 tanggal       : ${waktuSelesai}\n`;
+        isiBisnis += `∟ 🔢 paus tertangkap: ${state.targetBisnis.length}\n\n`;
+        isiBisnis += `───────── 📊 RINGKASAN ─────────\n`;
+        isiBisnis += `∟ 📝 ada bio/desc  : ${state.statistik.bioBisnis}\n`;
+        isiBisnis += `∟ 📵 tanpa desc    : ${state.statistik.tanpaBioBisnis}\n\n`;
+        isiBisnis += `────────── 📝 DATA NOMOR ──────────\n`;
+        isiBisnis += logBisnisSorted.length > 0 ? logBisnisSorted.join('\n\n') : `   (kosong)\n`;
+        fs.writeFileSync(`report_bisnis_${namaBersih}.txt`, isiBisnis);
+
+        // 2. eksekusi brankas personal (rakit dadakan dari objek mutlak)
+        fs.writeFileSync(`target_personal_${namaBersih}.json`, JSON.stringify(state.targetPersonal, null, 4));
+        const rakitLogPersonal = state.targetPersonal.map(data => {
+            let formatBio = data.bio ? data.bio.replace(/\n/g, '\n     │             ') : undefined;
+            let logData = `   • ${data.nomor}\n`;
+            if (data.updateTerakhir) logData += `     ├─ update    : ${data.updateTerakhir}\n`;
+            if (formatBio) logData += `     ├─ bio/desc  : ${formatBio}\n`;
+            
+            let lines = logData.trimEnd().split('\n');
+            for (let i = lines.length - 1; i >= 0; i--) {
+                if (lines[i].includes('├─')) {
+                    lines[i] = lines[i].replace('├─', '└─');
+                    break;
+                }
+            }
+            return lines.join('\n');
+        });
+        
+        let isiPersonal = `╔═══════════════════════════════╗\n║ RADAR GATLING - WA PERSONAL   ║\n╚═══════════════════════════════╝\n`;
+        isiPersonal += `∟ 📅 tanggal       : ${waktuSelesai}\n`;
+        isiPersonal += `∟ 🔢 total akun    : ${state.targetPersonal.length}\n\n`;
+        isiPersonal += `────────── 📝 DATA NOMOR ──────────\n`;
+        isiPersonal += rakitLogPersonal.length > 0 ? rakitLogPersonal.join('\n\n') : `   (kosong)\n`;
+        fs.writeFileSync(`report_personal_${namaBersih}.txt`, isiPersonal);
+
+        // 3. eksekusi brankas bodong (rakit dadakan)
+        fs.writeFileSync(`target_bodong_${namaBersih}.json`, JSON.stringify(state.targetBodong, null, 4));
+        const rakitLogBodong = state.targetBodong.map(data => `   • ${data.nomor}`);
+        
+        let isiBodong = `╔═══════════════════════════════╗\n║ RADAR REPORT - WA BODONG/MATI ║\n╚═══════════════════════════════╝\n`;
+        isiBodong += `∟ 📅 tanggal       : ${waktuSelesai}\n`;
+        isiBodong += `∟ 🔢 total bodong  : ${state.targetBodong.length}\n\n`;
+        isiBodong += `──── 🚫 TIDAK TERDAFTAR WA ─────\n`;
+        isiBodong += rakitLogBodong.length > 0 ? rakitLogBodong.join('\n') : `   (kosong)\n`;
+        fs.writeFileSync(`report_bodong_${namaBersih}.txt`, isiBodong);
+
+    } catch (e) {
+        logMinimal('error', 'gagal simpan auto-save mutlak:\n' + e.stack);
+    }
+};
+
+module.exports = { state, simpanLaporanAman };

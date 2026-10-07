@@ -1,0 +1,39 @@
+// file 1: utils/logger.js
+
+const consoleLogAsli = console.log;
+const consoleWarnAsli = console.warn;
+const consoleInfoAsli = console.info;
+const consoleErrorAsli = console.error;
+
+const saringTerminal = (...args) => {
+    let teks = "";
+    for (let arg of args) {
+        teks += (typeof arg === 'string' ? arg : JSON.stringify(arg)) + " ";
+    }
+    teks = teks.toLowerCase();
+    if (teks.includes('closing open session') || teks.includes('closing session') || teks.includes('prekey bundle')) {
+        return false;
+    }
+    return true;
+};
+
+// injeksi stealth filter ke console bawaan nodejs
+console.log = function (...args) {
+    if (saringTerminal(...args)) consoleLogAsli.apply(console, args);
+};
+console.warn = function (...args) {
+    if (saringTerminal(...args)) consoleWarnAsli.apply(console, args);
+};
+console.info = function (...args) {
+    if (saringTerminal(...args)) consoleInfoAsli.apply(console, args);
+};
+console.error = function (...args) {
+    if (saringTerminal(...args)) consoleErrorAsli.apply(console, args);
+};
+
+const logMinimal = (konteks, pesan) => {
+    const waktu = new Date().toLocaleTimeString('id-ID', { hour12: false });
+    console.log(`[${waktu}] ${konteks}: ${pesan}`);
+};
+
+module.exports = { logMinimal };
