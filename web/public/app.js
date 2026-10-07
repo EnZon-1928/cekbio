@@ -2,6 +2,11 @@ const $ = (selector) => document.querySelector(selector);
 
 const elements = {
     shutdown: $('#shutdown'),
+    confirmationDialog: $('#confirmation-dialog'),
+    confirmationTitle: $('#confirmation-title'),
+    confirmationMessage: $('#confirmation-message'),
+    confirmationCancel: $('#confirmation-cancel'),
+    confirmationAccept: $('#confirmation-accept'),
     message: $('#message'),
     senderForm: $('#sender-form'),
     senderJob: $('#sender-job'),
@@ -25,8 +30,59 @@ const elements = {
     reports: $('#reports')
 };
 
+let confirmationResolver = null;
+let confirmationCloseTimer = null;
+
+const confirmAction = ({ title, message, confirmLabel }) => new Promise(resolve => {
+    if (confirmationResolver) return resolve(false);
+
+    confirmationResolver = resolve;
+    elements.confirmationTitle.textContent = title;
+    elements.confirmationMessage.textContent = message;
+    elements.confirmationAccept.textContent = confirmLabel;
+    elements.confirmationDialog.classList.remove('is-visible');
+    elements.confirmationDialog.showModal();
+    elements.confirmationCancel.focus();
+    requestAnimationFrame(() => elements.confirmationDialog.classList.add('is-visible'));
+});
+
+const closeConfirmation = (confirmed) => {
+    if (!confirmationResolver) return;
+    const resolve = confirmationResolver;
+    confirmationResolver = null;
+    elements.confirmationDialog.classList.remove('is-visible');
+
+    const finishClose = () => {
+        clearTimeout(confirmationCloseTimer);
+        confirmationCloseTimer = null;
+        elements.confirmationDialog.removeEventListener('transitionend', finishOnTransitionEnd);
+        if (elements.confirmationDialog.open) elements.confirmationDialog.close();
+        resolve(confirmed);
+    };
+    const finishOnTransitionEnd = (event) => {
+        if (event.target === elements.confirmationDialog && event.propertyName === 'opacity') finishClose();
+    };
+
+    confirmationCloseTimer = window.setTimeout(finishClose, 200);
+    elements.confirmationDialog.addEventListener('transitionend', finishOnTransitionEnd);
+};
+
+elements.confirmationCancel.addEventListener('click', () => closeConfirmation(false));
+elements.confirmationAccept.addEventListener('click', () => closeConfirmation(true));
+elements.confirmationDialog.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeConfirmation(false);
+});
+elements.confirmationDialog.addEventListener('click', (event) => {
+    if (event.target === elements.confirmationDialog) closeConfirmation(false);
+});
+
 elements.shutdown.addEventListener('click', async () => {
-    if (!window.confirm('Shut down the cekbio application? Any active scan or sender operation must finish first.')) return;
+    if (!await confirmAction({
+        title: 'Shut down cekbio?',
+        message: 'This will stop the local application. Any active scan or sender operation must finish first. Your files and sessions will remain unchanged.',
+        confirmLabel: 'Shut down'
+    })) return;
     elements.shutdown.disabled = true;
     try {
         await request('/api/shutdown', {
@@ -52,7 +108,11 @@ $('#check-all').addEventListener('click', async () => {
 });
 
 $('#clean-senders').addEventListener('click', async () => {
-    if (!window.confirm('Check all senders and remove those that time out, are banned, or are logged out?')) return;
+    if (!await confirmAction({
+        title: 'Remove inactive senders?',
+        message: 'All sender sessions will be checked. Sessions that time out, are banned, or are logged out will be removed.',
+        confirmLabel: 'Check and remove'
+    })) return;
     try {
         await request('/api/senders/clean', {
             method: 'POST',
@@ -207,7 +267,11 @@ const checkSender = async (folder) => {
 };
 
 const deleteSender = async (folder) => {
-    if (!window.confirm(`Remove ${folder}? Its local session credentials will be permanently deleted.`)) return;
+    if (!await confirmAction({
+        title: 'Remove sender session?',
+        message: `The local credentials for ${folder} will be permanently deleted. This action cannot be undone.`,
+        confirmLabel: 'Remove sender'
+    })) return;
     try {
         await request(`/api/senders/${encodeURIComponent(folder)}/delete`, {
             method: 'POST',
@@ -222,7 +286,11 @@ const deleteSender = async (folder) => {
 };
 
 const deleteTarget = async (filename) => {
-    if (!window.confirm(`Remove "${filename}" and its checkpoint? Generated reports will not be affected.`)) return;
+    if (!await confirmAction({
+        title: 'Remove target list?',
+        message: `"${filename}" and its checkpoint will be permanently deleted. Generated reports will not be affected.`,
+        confirmLabel: 'Remove target'
+    })) return;
     try {
         await request(`/api/targets/${encodeURIComponent(filename)}/delete`, {
             method: 'POST',
@@ -237,7 +305,11 @@ const deleteTarget = async (filename) => {
 };
 
 const deleteReport = async (filename) => {
-    if (!window.confirm(`Permanently remove "${filename}"?`)) return;
+    if (!await confirmAction({
+        title: 'Remove result file?',
+        message: `"${filename}" will be permanently deleted. This action cannot be undone.`,
+        confirmLabel: 'Remove file'
+    })) return;
     try {
         await request(`/api/reports/${encodeURIComponent(filename)}/delete`, {
             method: 'POST',

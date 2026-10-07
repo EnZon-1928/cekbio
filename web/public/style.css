@@ -89,7 +89,26 @@ input:focus, select:focus { border-color: #68b394; box-shadow: 0 0 0 3px #1b9562
 .error-text { color: var(--red); }
 .message { position: sticky; top: 12px; z-index: 2; margin: -10px 0 17px; padding: 12px 15px; border-radius: 9px; color: var(--green-dark); background: var(--mint); font-size: 12px; box-shadow: 0 4px 16px #17231f12; }
 .message.error { color: var(--red); background: #fff0f0; }
+.confirmation-dialog { width: min(440px, calc(100vw - 32px)); max-width: none; margin: auto; padding: 28px; border: 1px solid #e8eeea; border-radius: 18px; color: var(--ink); background: #fff; box-shadow: 0 24px 80px #12251d30; opacity: 0; transform: translateY(10px) scale(.985); transition: opacity 160ms ease, transform 160ms ease; }
+.confirmation-dialog.is-visible { opacity: 1; transform: translateY(0) scale(1); }
+.confirmation-dialog::backdrop { background: #10201900; backdrop-filter: blur(0); transition: background 160ms ease, backdrop-filter 160ms ease; }
+.confirmation-dialog.is-visible::backdrop { background: #10201970; backdrop-filter: blur(3px); }
+.confirmation-dialog h2 { margin: 16px 0 7px; font-size: 19px; letter-spacing: -.03em; }
+.confirmation-dialog > p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.confirmation-icon { width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid #f1d9d9; border-radius: 13px; color: var(--red); background: #fff5f5; }
+.confirmation-icon svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; }
+.confirmation-icon circle:last-child { fill: currentColor; stroke: none; }
+.confirmation-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 25px; }
+.confirmation-actions .button { min-width: 96px; }
+.confirmation-actions .button:focus-visible { outline: 3px solid #17825d4d; outline-offset: 2px; }
+.danger-button { border: 1px solid #aa3e3e; color: #fff; background: #b84242; }
+.danger-button:hover { background: #a93636; }
+.secondary:focus-visible { outline: 3px solid #17825d4d; outline-offset: 2px; }
+.confirmation-dialog:not([open]) { display: none; }
 footer { padding: 29px 0 12px; color: #99a59e; text-align: center; font-size: 10px; }
+@media (prefers-reduced-motion: reduce) {
+    .confirmation-dialog, .confirmation-dialog::backdrop { transition-duration: 1ms; }
+}
 @media (max-width: 760px) {
     .topbar { height: 62px; padding: 0 18px; }
     .brand-mark { width: 34px; height: 34px; border-radius: 10px; }
@@ -98,6 +117,7 @@ footer { padding: 29px 0 12px; color: #99a59e; text-align: center; font-size: 10
     .local-badge i { width: 8px; height: 8px; }
     .shutdown-button { width: 36px; justify-content: center; padding: 0; }
     .shutdown-button span { display: none; }
+    .confirmation-dialog { padding: 23px; border-radius: 16px; }
     main { padding: 34px 16px 20px; }
     .layout { grid-template-columns: 1fr; }
     .scan-card { grid-row: auto; }

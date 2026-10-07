@@ -105,5 +105,21 @@
         </section>
         <footer>cekbio runs locally · WhatsApp sessions and files remain on this device</footer>
     </main>
+
+    <dialog id="confirmation-dialog" class="confirmation-dialog" aria-labelledby="confirmation-title" aria-describedby="confirmation-message">
+        <div class="confirmation-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M12 3.5 21 19H3l9-15.5Z"></path>
+                <path d="M12 9v4.5"></path>
+                <circle cx="12" cy="17" r=".7"></circle>
+            </svg>
+        </div>
+        <h2 id="confirmation-title"></h2>
+        <p id="confirmation-message"></p>
+        <div class="confirmation-actions">
+            <button id="confirmation-cancel" class="button secondary" type="button">Cancel</button>
+            <button id="confirmation-accept" class="button danger-button" type="button">Confirm</button>
+        </div>
+    </dialog>
 </body>
 </html>
