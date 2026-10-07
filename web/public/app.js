@@ -1,6 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 
 const elements = {
+    shutdown: $('#shutdown'),
     message: $('#message'),
     senderForm: $('#sender-form'),
     senderJob: $('#sender-job'),
@@ -23,6 +24,22 @@ const elements = {
     logs: $('#logs'),
     reports: $('#reports')
 };
+
+elements.shutdown.addEventListener('click', async () => {
+    if (!window.confirm('Shut down the cekbio application? Any active scan or sender operation must finish first.')) return;
+    elements.shutdown.disabled = true;
+    try {
+        await request('/api/shutdown', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ confirm: true })
+        });
+        showMessage('Application is shutting down. You can close this tab.');
+    } catch (error) {
+        elements.shutdown.disabled = false;
+        showMessage(error.message, true);
+    }
+});
 
 $('#check-all').addEventListener('click', async () => {
     try {

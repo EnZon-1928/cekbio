@@ -10,7 +10,6 @@ const { subscribeLogs } = require('../utils/logger');
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const SESSION_PATTERN = /^session_[^/\\\u0000-\u001f]+$/;
 const REPORT_PATTERN = /^report_(business|personal|unregistered)_.*\.txt$/;
-const TARGET_DATA_PATTERN = /^target_(business|personal|unregistered)_.*\.json$/;
 
 let scanJob = null;
 let senderJob = null;
@@ -59,7 +58,7 @@ const listTargets = () => fs.readdirSync(process.cwd(), { withFileTypes: true })
     .sort();
 
 const listDownloads = () => fs.readdirSync(process.cwd(), { withFileTypes: true })
-    .filter(entry => entry.isFile() && (REPORT_PATTERN.test(entry.name) || TARGET_DATA_PATTERN.test(entry.name)))
+    .filter(entry => entry.isFile() && REPORT_PATTERN.test(entry.name))
     .map(entry => entry.name)
     .sort();
 
@@ -95,7 +94,7 @@ const setSecurityHeaders = (res) => {
     res.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
 };
 
-const routeRequest = async (req, res) => {
+const routeRequest = async (req, res, server) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     let pathname;
     try {
@@ -167,7 +166,7 @@ const routeRequest = async (req, res) => {
     }
     if (method === 'GET' && pathname.startsWith('/api/reports/')) {
         const filename = pathname.slice('/api/reports/'.length);
-        if ((!REPORT_PATTERN.test(filename) && !TARGET_DATA_PATTERN.test(filename)) || !listDownloads().includes(filename)) {
+        if (!REPORT_PATTERN.test(filename) || !listDownloads().includes(filename)) {
             sendJson(res, 404, { error: 'Report not found.' });
             return;
         }
@@ -190,7 +189,7 @@ const routeRequest = async (req, res) => {
             sendJson(res, 400, { error: 'Explicit confirmation is required to remove a report.' });
             return;
         }
-        if ((!REPORT_PATTERN.test(filename) && !TARGET_DATA_PATTERN.test(filename)) || !listDownloads().includes(filename)) {
+        if (!REPORT_PATTERN.test(filename) || !listDownloads().includes(filename)) {
             sendJson(res, 404, { error: 'Report not found.' });
             return;
         }
@@ -408,17 +407,42 @@ const routeRequest = async (req, res) => {
         return;
     }
 
+    if (method === 'POST' && pathname === '/api/shutdown') {
+        const body = await readJsonBody(req);
+        if (body.confirm !== true) {
+            sendJson(res, 400, { error: 'Explicit confirmation is required to shut down the application.' });
+            return;
+        }
+        if (operationIsRunning() || state.isEngineRunning) {
+            sendJson(res, 409, { error: 'The application cannot shut down while a scan or sender operation is in progress.' });
+            return;
+        }
+        res.writeHead(202, {
+            'content-type': 'application/json; charset=utf-8',
+            'cache-control': 'no-store',
+            connection: 'close'
+        });
+        res.end(JSON.stringify({ message: 'Application is shutting down.' }), () => {
+            server.close((error) => {
+                if (error) console.error('failed to close web server:', error);
+            });
+            server.closeAllConnections?.();
+        });
+        return;
+    }
+
     sendJson(res, 404, { error: 'Not found.' });
 };
 
 const startWebServer = (port = 3000) => new Promise((resolve, reject) => {
-    const server = http.createServer((req, res) => {
+    let server;
+    server = http.createServer((req, res) => {
         setSecurityHeaders(res);
         if (!validateRequestOrigin(req)) {
             sendJson(res, 403, { error: 'Requests must originate from this local application.' });
             return;
         }
-        routeRequest(req, res).catch(error => {
+        routeRequest(req, res, server).catch(error => {
             if (res.headersSent) {
                 res.destroy(error);
                 return;

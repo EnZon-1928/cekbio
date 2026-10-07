@@ -19,6 +19,8 @@
 
 - The web server must remain bound to loopback (`127.0.0.1`) by default. Do not expose sender credentials, sessions, target lists, or reports to remote clients.
 - Validate uploaded filenames, request input, and filesystem operations. Keep sender deletion explicit and confirmed.
+- Keep internal `target_*` JSON results on disk for recovery, but do not list them in the dashboard.
+- A dashboard shutdown control may stop only the local Node.js application, never the operating system; require confirmation and refuse shutdown while a scan or sender operation is active.
 - Do not copy, log, or expose WhatsApp session credentials or target data unnecessarily.
 - The application can be run from either WSL/Linux or Windows. Run `npm install` in the specific project directory being used, then start the web interface with `npm run web`.
 

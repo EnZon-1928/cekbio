@@ -9,8 +9,27 @@
 </head>
 <body>
     <header class="topbar">
-        <div class="brand"><span class="brand-mark">c</span><div><strong>cekbio</strong><small>Local dashboard</small></div></div>
-        <span class="local-badge"><i></i> Running on this device</span>
+        <a class="brand" href="/" aria-label="cekbio dashboard">
+            <span class="brand-mark" aria-hidden="true">
+                <svg viewBox="0 0 36 36" focusable="false">
+                    <circle cx="17" cy="19" r="11.5"></circle>
+                    <circle cx="17" cy="19" r="6.5"></circle>
+                    <path d="M17 19 28 8"></path>
+                    <circle class="brand-center" cx="17" cy="19" r="2"></circle>
+                </svg>
+            </span>
+            <span class="brand-copy"><strong>cekbio</strong><small>LOCAL DASHBOARD</small></span>
+        </a>
+        <div class="header-actions">
+            <span class="local-badge"><i></i> Running on this device</span>
+            <button id="shutdown" class="shutdown-button" type="button" title="Shut down application">
+                <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                    <path d="M10 2.5v7"></path>
+                    <path d="M5.25 5.85a7 7 0 1 0 9.5 0"></path>
+                </svg>
+                <span>Shut down</span>
+            </button>
+        </div>
     </header>
 
     <main>
