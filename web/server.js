@@ -121,18 +121,29 @@ const routeRequest = async (req, res, server) => {
 
     if (method === 'GET' && pathname === '/api/status') {
         const totalBatches = state.batches.length;
-        const currentBatch = scanJob?.status === 'completed'
+        const scanStatus = scanJob?.status === 'starting' && state.isEngineRunning
+            ? 'running'
+            : scanJob?.status;
+        const currentBatch = scanStatus === 'completed'
             ? totalBatches
             : Math.min(state.batchIndex + (state.isEngineRunning ? 1 : 0), totalBatches);
+        const totalTargets = state.batches.reduce((total, batch) => total + batch.length, 0);
+        const completedTargets = scanStatus === 'completed'
+            ? totalTargets
+            : state.batches
+                .slice(0, Math.min(state.batchIndex, totalBatches))
+                .reduce((total, batch) => total + batch.length, 0);
         sendJson(res, 200, {
             scan: scanJob ? {
-                status: scanJob.status,
+                status: scanStatus,
                 targetFile: scanJob.targetFile,
                 sessionFolder: scanJob.sessionFolder,
                 error: scanJob.error,
                 logs: scanJob.logs,
                 currentBatch,
                 totalBatches,
+                completedTargets,
+                totalTargets,
                 statistics: state.statistics
             } : null,
             sender: senderJob

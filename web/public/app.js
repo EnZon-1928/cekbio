@@ -25,9 +25,17 @@ const elements = {
     progressTitle: $('#progress-title'),
     progressCount: $('#progress-count'),
     progressBar: $('#progress-bar'),
+    progressDetail: $('#progress-detail'),
     stats: $('#stats'),
     logs: $('#logs'),
-    reports: $('#reports')
+    reports: $('#reports'),
+    reportSearch: $('#report-search'),
+    reportCategory: $('#report-category'),
+    summaryContext: $('#summary-context'),
+    statBusiness: $('#stat-business'),
+    statPersonal: $('#stat-personal'),
+    statUnregistered: $('#stat-unregistered'),
+    statDescriptions: $('#stat-descriptions')
 };
 
 let confirmationResolver = null;
@@ -129,6 +137,7 @@ $('#clean-senders').addEventListener('click', async () => {
 let targets = [];
 let checkpoints = {};
 let senders = [];
+let reports = [];
 
 const request = async (url, options) => {
     const response = await fetch(url, options);
@@ -216,13 +225,30 @@ const refreshSenders = async () => {
 };
 
 const refreshReports = async () => {
-    const { reports } = await request('/api/reports');
+    const result = await request('/api/reports');
+    reports = result.reports;
+    renderReports();
+};
+
+const renderReports = () => {
     elements.reports.replaceChildren();
     if (!reports.length) {
         elements.reports.textContent = 'No reports are available yet.';
         return;
     }
-    for (const filename of reports) {
+    const searchTerm = elements.reportSearch.value.trim().toLowerCase();
+    const selectedCategory = elements.reportCategory.value;
+    const filteredReports = reports.filter(filename => {
+        const matchesSearch = filename.toLowerCase().includes(searchTerm);
+        const category = filename.match(/^report_(business|personal|unregistered)_/)?.[1];
+        const matchesCategory = selectedCategory === 'all' || category === selectedCategory;
+        return matchesSearch && matchesCategory;
+    });
+    if (!filteredReports.length) {
+        elements.reports.textContent = 'No reports match the selected filters.';
+        return;
+    }
+    for (const filename of filteredReports) {
         const row = document.createElement('div');
         row.className = 'list-row';
         const name = document.createElement('span');
@@ -242,6 +268,32 @@ const refreshReports = async () => {
         row.append(name, actions);
         elements.reports.append(row);
     }
+};
+
+const renderSummary = (scan) => {
+    if (!scan) {
+        elements.summaryContext.textContent = 'No scan data available';
+        elements.statBusiness.textContent = '—';
+        elements.statPersonal.textContent = '—';
+        elements.statUnregistered.textContent = '—';
+        elements.statDescriptions.textContent = '—';
+        return;
+    }
+
+    const statistics = scan.statistics;
+    const statusContext = {
+        starting: 'Preparing scan',
+        running: 'Current scan · In progress',
+        completed: 'Latest scan · Completed',
+        failed: 'Latest scan · Failed'
+    };
+    elements.summaryContext.textContent = statusContext[scan.status] || 'Latest scan';
+    elements.statBusiness.textContent = (
+        Number(statistics?.bioBusiness || 0) + Number(statistics?.noBioBusiness || 0)
+    ).toLocaleString();
+    elements.statPersonal.textContent = Number(statistics?.personal || 0).toLocaleString();
+    elements.statUnregistered.textContent = Number(statistics?.unregistered || 0).toLocaleString();
+    elements.statDescriptions.textContent = Number(statistics?.bioBusiness || 0).toLocaleString();
 };
 
 const updateCheckpoint = () => {
@@ -395,6 +447,7 @@ const formatScanLog = ({ timestamp, context, message }) => {
 const displayStatus = (result) => {
     const scan = result.scan;
     const sender = result.sender;
+    renderSummary(scan);
     if (sender) {
         elements.senderJob.hidden = false;
         elements.senderJob.replaceChildren();
@@ -443,8 +496,9 @@ const displayStatus = (result) => {
     elements.progress.hidden = false;
     elements.progressTitle.textContent = `${scan.targetFile} · ${scan.sessionFolder}`;
     elements.progressCount.textContent = `${scan.currentBatch} of ${scan.totalBatches} batches`;
-    const percent = scan.totalBatches ? Math.min(100, scan.currentBatch / scan.totalBatches * 100) : 0;
+    const percent = scan.totalTargets ? Math.min(100, scan.completedTargets / scan.totalTargets * 100) : 0;
     elements.progressBar.style.width = `${percent}%`;
+    elements.progressDetail.textContent = `${Number(scan.completedTargets || 0).toLocaleString()} of ${Number(scan.totalTargets || 0).toLocaleString()} targets completed`;
     elements.stats.textContent = scan.statistics
         ? `Business: ${scan.statistics.bioBusiness + scan.statistics.noBioBusiness} · Personal: ${scan.statistics.personal} · Unregistered: ${scan.statistics.unregistered}`
         : '';
@@ -473,6 +527,8 @@ const pollStatus = async () => {
 };
 
 elements.target.addEventListener('change', updateCheckpoint);
+elements.reportSearch.addEventListener('input', renderReports);
+elements.reportCategory.addEventListener('change', renderReports);
 $('#refresh').addEventListener('click', () => {
     Promise.all([refreshTargets(), refreshSenders(), refreshReports(), pollStatus()])
         .catch(error => showMessage(error.message, true));

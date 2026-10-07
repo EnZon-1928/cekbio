@@ -41,6 +41,38 @@
 
         <div id="message" class="message" role="status" hidden></div>
 
+        <section class="summary-section" aria-labelledby="summary-heading">
+            <div class="summary-heading">
+                <div>
+                    <p class="eyebrow">OVERVIEW</p>
+                    <h2 id="summary-heading">Scan summary</h2>
+                </div>
+                <span id="summary-context" class="summary-context">No scan data available</span>
+            </div>
+            <div class="summary-grid">
+                <article class="summary-card">
+                    <span>Business</span>
+                    <strong id="stat-business">—</strong>
+                    <small>accounts found</small>
+                </article>
+                <article class="summary-card">
+                    <span>Personal</span>
+                    <strong id="stat-personal">—</strong>
+                    <small>accounts found</small>
+                </article>
+                <article class="summary-card">
+                    <span>Unregistered</span>
+                    <strong id="stat-unregistered">—</strong>
+                    <small>numbers checked</small>
+                </article>
+                <article class="summary-card">
+                    <span>Business descriptions</span>
+                    <strong id="stat-descriptions">—</strong>
+                    <small>with description</small>
+                </article>
+            </div>
+        </section>
+
         <section class="layout">
             <article class="card">
                 <div class="card-heading">
@@ -89,6 +121,7 @@
                 <div id="progress" class="progress-area" hidden>
                     <div class="progress-label"><span id="progress-title">Preparing...</span><span id="progress-count"></span></div>
                     <div class="progress-track"><span id="progress-bar"></span></div>
+                    <div id="progress-detail" class="progress-detail"></div>
                     <div id="stats" class="stats"></div>
                 </div>
                 <div class="logs-heading"><strong>Scan activity</strong><span>Recent events</span></div>
@@ -99,7 +132,18 @@
                 <div class="card-heading">
                     <div><p class="eyebrow">03 / RESULTS</p><h2>Reports</h2></div>
                 </div>
-                <p class="hint">Generated text reports and JSON results are available for download here.</p>
+                <p class="hint">Search and filter generated reports. Internal scan data remains stored locally.</p>
+                <div class="report-filters">
+                    <label class="sr-only" for="report-search">Search reports</label>
+                    <input id="report-search" type="search" placeholder="Search reports..." autocomplete="off">
+                    <label class="sr-only" for="report-category">Filter reports by category</label>
+                    <select id="report-category">
+                        <option value="all">All categories</option>
+                        <option value="business">Business</option>
+                        <option value="personal">Personal</option>
+                        <option value="unregistered">Unregistered</option>
+                    </select>
+                </div>
                 <div id="reports" class="list"></div>
             </article>
         </section>
