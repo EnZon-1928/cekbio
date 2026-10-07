@@ -38,7 +38,7 @@ const extractText = (content) => {
     return String(content);
 };
 
-const runScanner = async (sock) => {
+const runScanner = async (sock, { exitOnError = true } = {}) => {
     try {
         for (; state.batchIndex < state.batches.length; state.batchIndex++) {
             const currentBatch = state.batches[state.batchIndex];
@@ -312,7 +312,8 @@ const runScanner = async (sock) => {
         minimalLog('system', '[memory dump] saving remaining data to disk...');
         saveReport(); 
         
-        process.exit(1);
+        if (exitOnError) process.exit(1);
+        throw e;
     }
 };
 

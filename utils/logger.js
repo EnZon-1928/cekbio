@@ -4,6 +4,7 @@ const originalConsoleLog = console.log;
 const originalConsoleWarn = console.warn;
 const originalConsoleInfo = console.info;
 const originalConsoleError = console.error;
+const logListeners = new Set();
 
 // filter terminal output to hide irrelevant baileys logs
 const filterTerminalOutput = (...args) => {
@@ -37,7 +38,14 @@ console.error = function (...args) {
 // custom lightweight logger
 const minimalLog = (context, message) => {
     const timestamp = new Date().toLocaleTimeString('id-ID', { hour12: false });
+    const entry = { timestamp, context, message: String(message) };
+    for (const listener of logListeners) listener(entry);
     console.log(`[${timestamp}] ${context}: ${message}`);
 };
 
-module.exports = { minimalLog };
+const subscribeLogs = (listener) => {
+    logListeners.add(listener);
+    return () => logListeners.delete(listener);
+};
+
+module.exports = { minimalLog, subscribeLogs };

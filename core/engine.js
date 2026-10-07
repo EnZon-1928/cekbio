@@ -45,42 +45,55 @@ const resetState = (isResume = false, cleanName = '') => {
     state.batches = [];
 };
 
-const startEngine = async (returnToMenu) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const prompt = askQuestion(rl);
+const startEngine = async (returnToMenu, webOptions = null) => {
+    const interactive = !webOptions;
+    const rl = interactive ? readline.createInterface({ input: process.stdin, output: process.stdout }) : null;
+    const prompt = rl ? askQuestion(rl) : null;
+    const closePrompt = () => rl?.close();
 
     try {
-        console.clear();
-        console.log('=== starting scanner ===');
+        if (interactive) {
+            console.clear();
+            console.log('=== starting scanner ===');
+        }
 
         const txtFileList = fs.readdirSync('.').filter(f => f.endsWith('.txt') && !f.includes('report_'));
-        console.log('\n[ target file list ]');
+        if (interactive) console.log('\n[ target file list ]');
         
         if (txtFileList.length === 0) {
-            console.log(' - no target files found.');
-            console.log('returning to menu in 2 seconds...');
-            rl.close();
-            return setTimeout(returnToMenu, 2000);
+            if (interactive) {
+                console.log(' - no target files found.');
+                console.log('returning to menu in 2 seconds...');
+                closePrompt();
+                return setTimeout(returnToMenu, 2000);
+            }
+            throw new Error('No target files found.');
         }
 
-        txtFileList.forEach((f, i) => console.log(`${i + 1}. ${f}`));
-        console.log('0. cancel and return');
+        if (interactive) {
+            txtFileList.forEach((f, i) => console.log(`${i + 1}. ${f}`));
+            console.log('0. cancel and return');
+        }
         
-        const fileInput = await prompt(`\nselect target file number [0-${txtFileList.length}]: `);
-        const fileIndex = parseInt(fileInput);
+        let targetFile = webOptions?.targetFile;
+        if (interactive) {
+            const fileInput = await prompt(`\nselect target file number [0-${txtFileList.length}]: `);
+            const fileIndex = parseInt(fileInput);
 
-        if (fileInput === '0' || fileIndex === 0) {
-            rl.close();
-            return returnToMenu();
+            if (fileInput === '0' || fileIndex === 0) {
+                closePrompt();
+                return returnToMenu();
+            }
+
+            if (isNaN(fileIndex) || fileIndex < 1 || fileIndex > txtFileList.length) {
+                console.log('\n[!] invalid selection.');
+                closePrompt();
+                return setTimeout(returnToMenu, 2000);
+            }
+            targetFile = txtFileList[fileIndex - 1];
         }
 
-        if (isNaN(fileIndex) || fileIndex < 1 || fileIndex > txtFileList.length) {
-            console.log('\n[!] invalid selection.');
-            rl.close();
-            return setTimeout(returnToMenu, 2000);
-        }
-
-        const targetFile = txtFileList[fileIndex - 1];
+        if (!txtFileList.includes(targetFile)) throw new Error('Selected target file was not found.');
         state.activeTargetFile = targetFile;
         const cleanName = targetFile.replace('.txt', '');
 
@@ -89,21 +102,27 @@ const startEngine = async (returnToMenu) => {
         if (fs.existsSync(checkpointFile)) {
             try {
                 const tracker = JSON.parse(fs.readFileSync(checkpointFile, 'utf-8'));
-                console.log(`\n[!] scan checkpoint found for [${targetFile}]`);
-                console.log(`    (last scan: batch ${tracker.batchIndex}/${tracker.totalBatches})`);
-                console.log('1. resume scan (continue from last point)');
-                console.log('2. delete checkpoint (start over)');
-                console.log('0. cancel');
-                
-                const resumeChoice = await prompt('select menu [0-2]: ');
-                if (resumeChoice === '1') {
+                if (interactive) {
+                    console.log(`\n[!] scan checkpoint found for [${targetFile}]`);
+                    console.log(`    (last scan: batch ${tracker.batchIndex}/${tracker.totalBatches})`);
+                    console.log('1. resume scan (continue from last point)');
+                    console.log('2. delete checkpoint (start over)');
+                    console.log('0. cancel');
+
+                    const resumeChoice = await prompt('select menu [0-2]: ');
+                    if (resumeChoice === '1') {
+                        isResume = true;
+                    } else if (resumeChoice === '2') {
+                        fs.unlinkSync(checkpointFile);
+                        isResume = false;
+                    } else {
+                        closePrompt();
+                        return returnToMenu();
+                    }
+                } else if (webOptions.resume) {
                     isResume = true;
-                } else if (resumeChoice === '2') {
-                    fs.unlinkSync(checkpointFile);
-                    isResume = false;
                 } else {
-                    rl.close();
-                    return returnToMenu();
+                    fs.unlinkSync(checkpointFile);
                 }
             } catch (e) {
                 console.log('\n[!] error reading checkpoint:\n' + e.stack);
@@ -121,54 +140,67 @@ const startEngine = async (returnToMenu) => {
         
         if (numberList.length === 0) {
             console.log('\n[!] target file is empty or has wrong format.');
-            rl.close();
+            closePrompt();
+            if (webOptions) throw new Error('Target file is empty or has the wrong format.');
             return setTimeout(returnToMenu, 2000);
         }
 
-        console.log(`\ninfo: ${numberList.length} numbers ready to scan.`);
-        const batchSizeInput = await prompt('enter amount of numbers per batch (e.g., 50, type 0 to cancel): ');
-        
-        if (batchSizeInput === '0') {
-            rl.close();
+        if (interactive) console.log(`\ninfo: ${numberList.length} numbers ready to scan.`);
+        const batchSizeInput = interactive
+            ? await prompt('enter amount of numbers per batch (e.g., 50, type 0 to cancel): ')
+            : String(webOptions.batchSize);
+
+        if (interactive && batchSizeInput === '0') {
+            closePrompt();
             return returnToMenu();
         }
         
         const batchLimit = parseInt(batchSizeInput) || 50;
+        if (!Number.isSafeInteger(batchLimit) || batchLimit < 1) {
+            throw new Error('Batch size must be a positive safe integer.');
+        }
         for (let i = 0; i < numberList.length; i += batchLimit) {
             state.batches.push(numberList.slice(i, i + batchLimit));
         }
 
         const sessionList = fs.readdirSync('.').filter(f => f.startsWith('session_'));
-        console.log('\n[ active sender list ]');
+        if (interactive) console.log('\n[ active sender list ]');
         
         if (sessionList.length === 0) {
-            console.log(' - no active sender. return and add one first!');
-            console.log('returning to menu in 2 seconds...');
-            rl.close();
-            return setTimeout(returnToMenu, 2000);
+            if (interactive) {
+                console.log(' - no active sender. return and add one first!');
+                console.log('returning to menu in 2 seconds...');
+                closePrompt();
+                return setTimeout(returnToMenu, 2000);
+            }
+            throw new Error('No sender sessions found.');
         }
 
-        sessionList.forEach((f, i) => console.log(`${i + 1}. ${f.replace('_', ' ')}`));
-        console.log('0. cancel and return');
+        let sessionFolder = webOptions?.sessionFolder;
+        if (interactive) {
+            sessionList.forEach((f, i) => console.log(`${i + 1}. ${f.replace('_', ' ')}`));
+            console.log('0. cancel and return');
 
-        const sessionInput = await prompt(`\nselect sender number [0-${sessionList.length}]: `);
-        const sessionIndex = parseInt(sessionInput);
+            const sessionInput = await prompt(`\nselect sender number [0-${sessionList.length}]: `);
+            const sessionIndex = parseInt(sessionInput);
 
-        if (sessionInput === '0' || sessionIndex === 0) {
-            rl.close();
-            return returnToMenu();
+            if (sessionInput === '0' || sessionIndex === 0) {
+                closePrompt();
+                return returnToMenu();
+            }
+
+            if (isNaN(sessionIndex) || sessionIndex < 1 || sessionIndex > sessionList.length) {
+                console.log('\n[!] invalid selection.');
+                closePrompt();
+                return setTimeout(returnToMenu, 2000);
+            }
+            sessionFolder = sessionList[sessionIndex - 1];
         }
 
-        if (isNaN(sessionIndex) || sessionIndex < 1 || sessionIndex > sessionList.length) {
-            console.log('\n[!] invalid selection.');
-            rl.close();
-            return setTimeout(returnToMenu, 2000);
-        }
+        if (!sessionList.includes(sessionFolder)) throw new Error('Selected sender session was not found.');
 
-        const sessionFolder = sessionList[sessionIndex - 1];
-
-        console.log(`\nconnecting sender [${sessionFolder}]...`);
-        rl.close();
+        if (interactive) console.log(`\nconnecting sender [${sessionFolder}]...`);
+        closePrompt();
 
         const { state: authState, saveCreds } = await useMultiFileAuthState(sessionFolder);
         const { version } = await fetchLatestBaileysVersion();
@@ -188,20 +220,42 @@ const startEngine = async (returnToMenu) => {
             const { connection } = update;
             if (connection === 'open') {
                 console.log(`\n[+] sender connected. initiating scanner!`);
+                state.isEngineRunning = true;
                 try {
-                    await runScanner(sock);
+                    await runScanner(sock, { exitOnError: interactive });
+                    state.isEngineRunning = false;
+                    webOptions?.onComplete?.();
                 } catch (e) {
+                    state.isEngineRunning = false;
                     console.log('fatal error while calling scanner:\n' + e.stack);
+                    webOptions?.onError?.(e);
+                } finally {
+                    if (webOptions) {
+                        sock.ws.close();
+                        sock.ev.removeAllListeners();
+                    }
                 }
             } else if (connection === 'close') {
                 console.log('\n[!] connection closed. check network or sender status.');
-                process.exit(1);
+                if (webOptions) {
+                    state.isEngineRunning = false;
+                    webOptions.onError?.(new Error('Sender connection closed.'));
+                } else {
+                    process.exit(1);
+                }
             }
         });
 
+        if (webOptions) {
+            await new Promise((resolve, reject) => {
+                webOptions.onComplete = resolve;
+                webOptions.onError = reject;
+            });
+        }
     } catch (e) {
         console.log('\nfatal error in engine bridge:\n' + e.stack);
-        rl.close();
+        closePrompt();
+        if (webOptions) throw e;
         if (returnToMenu) setTimeout(returnToMenu, 3000);
     }
 };

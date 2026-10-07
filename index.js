@@ -42,4 +42,18 @@ process.on('unhandledRejection', (e) => {
 });
 
 // execute main entry point
-runMainMenu();
+if (process.argv[2] === 'web') {
+    const { startWebServer } = require('./web/server');
+    const configuredPort = process.env.PORT ? Number(process.env.PORT) : 3000;
+    if (!Number.isInteger(configuredPort) || configuredPort < 0 || configuredPort > 65535) {
+        console.error('PORT must be an integer from 0 to 65535.');
+        process.exitCode = 1;
+    } else {
+        startWebServer(configuredPort).catch((e) => {
+            console.error('failed to start local web server:', e.stack || e);
+            process.exitCode = 1;
+        });
+    }
+} else {
+    runMainMenu();
+}

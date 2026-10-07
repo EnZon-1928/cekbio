@@ -28,9 +28,11 @@ const getHighestSessionId = () => {
     }
 };
 
-const addSender = async () => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const prompt = askQuestion(rl);
+const addSender = async (options = {}) => {
+    const interactive = options.phoneNumber === undefined;
+    const rl = interactive ? readline.createInterface({ input: process.stdin, output: process.stdout }) : null;
+    const prompt = rl ? askQuestion(rl) : null;
+    const closePrompt = () => rl?.close();
     
     try {
         const newId = getHighestSessionId();
@@ -39,9 +41,10 @@ const addSender = async () => {
         
         const { state, saveCreds } = await useMultiFileAuthState(newFolder);
         
-        const phoneNumber = await prompt('enter sender number (e.g., 628xxx): ');
+        const phoneNumber = interactive ? await prompt('enter sender number (e.g., 628xxx): ') : options.phoneNumber;
         const cleanNumber = phoneNumber.replace(/\D/g, '');
-        rl.close(); 
+        if (!interactive && cleanNumber.length < 6) throw new Error('Sender number is invalid.');
+        closePrompt();
         
         let isPairing = false; 
 
@@ -68,9 +71,13 @@ const addSender = async () => {
                     isPairing = true;
                     console.log(`\n[+] pairing code: ${code}`);
                     console.log('waiting for sender response... (max 3 minutes)');
+                    options.onPairingCode?.(code, newFolder);
                 } catch (errPairing) {
                     writeLog(`failed to request pairing for ${cleanNumber}: ` + errPairing.stack);
                     console.log('\n[!] failed to request pairing code. check connection or log.txt');
+                    sock.ws.close();
+                    sock.ev.removeAllListeners();
+                    if (!interactive) throw errPairing;
                     return;
                 }
             }
@@ -81,7 +88,7 @@ const addSender = async () => {
                     console.log('\n[!] timeout. sender failed to connect (180s).');
                     sock.ws.close();
                     sock.ev.removeAllListeners();
-                    resolve();
+                    resolve({ folder: newFolder, status: 'timeout' });
                 }, 180000);
 
                 sock.ev.on('connection.update', async (update) => {
@@ -92,7 +99,7 @@ const addSender = async () => {
                         console.log(`\n[+] sender connected! session ${newFolder} saved.`);
                         sock.ws.close();
                         sock.ev.removeAllListeners();
-                        resolve();
+                        resolve({ folder: newFolder, status: 'connected' });
                     } else if (connection === 'close') {
                         const reasonCode = lastDisconnect?.error?.output?.statusCode;
                         const errorMessage = lastDisconnect?.error?.message;
@@ -104,7 +111,7 @@ const addSender = async () => {
                             clearTimeout(timeoutLimit);
                             sock.ws.close();
                             sock.ev.removeAllListeners();
-                            resolve();
+                            resolve({ folder: newFolder, status: 'failed' });
                         } else {
                             writeLog(`[${newFolder}] micro-disconnect (${reasonCode}). executing automatic reconnect...`);
                             
@@ -119,11 +126,13 @@ const addSender = async () => {
             });
         };
 
-        await connectEngine();
+        return await connectEngine();
 
     } catch (e) {
         writeLog('fatal error adding sender: ' + e.stack);
         console.log('\nfatal error adding sender, check log.txt\n' + e.stack);
+        closePrompt();
+        if (!interactive) throw e;
     }
 };
 
@@ -233,4 +242,4 @@ const manageSenderSession = async (mode, data) => {
     }
 };
 
-module.exports = { addSender, manageSenderSession };
+module.exports = { addSender, manageSenderSession, pingSender };
