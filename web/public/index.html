@@ -110,11 +110,12 @@
                     <label for="target">Target list</label>
                     <div class="inline-form">
                         <select id="target" name="targetFile" required></select>
-                        <button id="upload-trigger" class="button secondary" type="button">Upload .txt</button>
+                        <button id="upload-trigger" class="button secondary" type="button">Upload targets</button>
                     </div>
+                    <p class="hint upload-hint">TXT or XLSX · up to 10 MB</p>
                     <div class="target-list-heading"><strong>Available target lists</strong></div>
                     <div id="target-files" class="list target-files"></div>
-                    <input id="upload" type="file" accept=".txt,text/plain" hidden>
+                    <input id="upload" type="file" accept=".txt,.xlsx,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
                     <div id="checkpoint-box" class="checkpoint-box" hidden>
                         <strong>Checkpoint available</strong>
                         <span id="checkpoint-info"></span>

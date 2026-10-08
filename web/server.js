@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const XLSX = require('xlsx');
 
 const { state } = require('../core/state');
 const { startEngine } = require('../core/engine');
@@ -8,6 +9,9 @@ const { addSender, pingSender } = require('../core/sender');
 const { subscribeLogs } = require('../utils/logger');
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const MAX_UPLOAD_BASE64_LENGTH = Math.ceil(MAX_UPLOAD_BYTES / 3) * 4;
+const MAX_JSON_UPLOAD_BYTES = MAX_UPLOAD_BASE64_LENGTH + 16 * 1024;
+const MAX_WORKSHEET_CELLS = 1_000_000;
 const SESSION_PATTERN = /^session_[^/\\\u0000-\u001f]+$/;
 const RESULT_PATTERN = /^result_(business|personal|unregistered)_(.+)\.txt$/;
 
@@ -73,6 +77,68 @@ const listResults = () => fs.readdirSync(process.cwd(), { withFileTypes: true })
     .filter(entry => entry.isFile() && RESULT_PATTERN.test(entry.name) && hasResultData(entry.name))
     .map(entry => entry.name)
     .sort();
+
+const validateTargetFilename = filename => typeof filename === 'string'
+    && path.basename(filename) === filename
+    && !filename.includes('/') && !filename.includes('\\')
+    && !/[\u0000-\u001f\u007f]/.test(filename)
+    && filename.length > 4 && filename.endsWith('.txt')
+    && !filename.includes('report_') && !filename.includes('result_');
+
+const numbersFromWorkbook = (buffer) => {
+    let workbook;
+    try {
+        workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true, cellNF: true });
+    } catch {
+        throw Object.assign(new Error('The XLSX workbook is invalid or cannot be read.'), { statusCode: 400 });
+    }
+
+    const numbers = [];
+    let visitedCells = 0;
+    for (const sheetName of workbook.SheetNames) {
+        const sheet = workbook.Sheets[sheetName];
+        if (!sheet?.['!ref']) continue;
+
+        let range;
+        try {
+            range = XLSX.utils.decode_range(sheet['!ref']);
+        } catch {
+            throw Object.assign(new Error('The XLSX workbook contains an invalid worksheet range.'), { statusCode: 400 });
+        }
+        const cellCount = (range.e.r - range.s.r + 1) * (range.e.c - range.s.c + 1);
+        visitedCells += cellCount;
+        if (!Number.isSafeInteger(cellCount) || visitedCells > MAX_WORKSHEET_CELLS) {
+            throw Object.assign(new Error('The XLSX workbook contains too many cells to process safely.'), { statusCode: 413 });
+        }
+
+        for (let row = range.s.r; row <= range.e.r; row++) {
+            for (let column = range.s.c; column <= range.e.c; column++) {
+                const cell = sheet[XLSX.utils.encode_cell({ r: row, c: column })];
+                if (!cell || cell.t === 'b' || cell.t === 'e' || cell.t === 'd' || cell.v == null) continue;
+                if (typeof cell.v !== 'string' && typeof cell.v !== 'number') continue;
+                if (typeof cell.v === 'number' && cell.v < 0) continue;
+                if (typeof cell.v === 'number' && !Number.isSafeInteger(cell.v)) continue;
+                if (typeof cell.v === 'number' && XLSX.SSF.is_date(cell.z)) continue;
+
+                let digits;
+                if (typeof cell.v === 'number') {
+                    digits = String(cell.v);
+                    const displayed = String(cell.w || '');
+                    if (!/[eE][+-]?\d+$/.test(displayed)) {
+                        const displayedDigits = displayed.replace(/\D/g, '');
+                        if (displayedDigits.length > 5) digits = displayedDigits;
+                    }
+                } else {
+                    if (/^[+-]?(?:\d+\.?\d*|\.\d+)[eE][+-]?\d+$/.test(cell.v.trim())) continue;
+                    digits = cell.v.replace(/\D/g, '');
+                }
+                if (digits.length > 5) numbers.push(digits);
+            }
+        }
+    }
+
+    return numbers;
+};
 
 const operationIsRunning = () => scanJob?.status === 'starting' || scanJob?.status === 'running'
     || senderJob?.status === 'starting' || senderJob?.status === 'running';
@@ -218,6 +284,75 @@ const routeRequest = async (req, res, server) => {
         }
         fs.unlinkSync(path.join(process.cwd(), filename));
         sendJson(res, 200, { deleted: filename });
+        return;
+    }
+
+    if (method === 'POST' && pathname === '/api/targets/xlsx') {
+        const body = await readJsonBody(req, MAX_JSON_UPLOAD_BYTES);
+        if (typeof body.name !== 'string' || !/\.xlsx$/i.test(body.name)
+            || typeof body.contentsBase64 !== 'string'
+            || body.contentsBase64.length === 0
+            || body.contentsBase64.length % 4 !== 0
+            || /[^A-Za-z0-9+/=]/.test(body.contentsBase64)) {
+            sendJson(res, 400, { error: 'Choose a valid .xlsx workbook no larger than 10 MB.' });
+            return;
+        }
+        if (body.contentsBase64.length > MAX_UPLOAD_BASE64_LENGTH) {
+            sendJson(res, 413, { error: 'The XLSX file must be no larger than 10 MB.' });
+            return;
+        }
+
+        const workbookBuffer = Buffer.from(body.contentsBase64, 'base64');
+        if (workbookBuffer.length === 0 || workbookBuffer.length > MAX_UPLOAD_BYTES
+            || workbookBuffer.toString('base64') !== body.contentsBase64) {
+            sendJson(res, workbookBuffer.length > MAX_UPLOAD_BYTES ? 413 : 400, {
+                error: workbookBuffer.length > MAX_UPLOAD_BYTES
+                    ? 'The XLSX file must be no larger than 10 MB.'
+                    : 'The XLSX file data is invalid.'
+            });
+            return;
+        }
+        if (workbookBuffer[0] !== 0x50 || workbookBuffer[1] !== 0x4b
+            || workbookBuffer[2] !== 0x03 || workbookBuffer[3] !== 0x04) {
+            sendJson(res, 400, { error: 'The selected file is not a valid XLSX workbook.' });
+            return;
+        }
+
+        const sourceName = path.basename(body.name);
+        const targetName = `${sourceName.slice(0, -5)}.txt`;
+        if (sourceName !== body.name || !validateTargetFilename(targetName)) {
+            sendJson(res, 400, { error: 'The workbook filename cannot be used as a target list name.' });
+            return;
+        }
+
+        let numbers;
+        try {
+            numbers = numbersFromWorkbook(workbookBuffer);
+        } catch (error) {
+            if (!error.statusCode) throw error;
+            sendJson(res, error.statusCode, { error: error.message });
+            return;
+        }
+        if (numbers.length === 0) {
+            sendJson(res, 422, { error: 'No phone numbers were found. Enter numbers as text or as whole-number cells with at least six digits.' });
+            return;
+        }
+
+        const targetPath = path.join(process.cwd(), targetName);
+        try {
+            fs.writeFileSync(targetPath, `${numbers.join('\n')}\n`, { flag: 'wx' });
+        } catch (error) {
+            if (error.code === 'EEXIST') {
+                sendJson(res, 409, { error: `A target list named "${targetName}" already exists.` });
+                return;
+            }
+            throw error;
+        }
+        sendJson(res, 201, {
+            target: targetName,
+            importedNumbers: numbers.length,
+            message: `Imported ${numbers.length.toLocaleString()} numbers from all worksheets into ${targetName}.`
+        });
         return;
     }
 

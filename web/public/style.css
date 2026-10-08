@@ -52,6 +52,7 @@ input:focus, select:focus { border-color: #68b394; box-shadow: 0 0 0 3px #1b9562
 .button.primary:disabled { cursor: wait; opacity: .55; }
 .button.secondary { color: var(--green-dark); background: var(--mint); }
 .hint { color: var(--muted); font-size: 11px; line-height: 1.55; margin: 11px 0 17px; }
+.upload-hint { margin: -4px 0 3px; }
 .list { display: grid; gap: 0; }
 .list-row { min-height: 43px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #edf1ee; font-size: 12px; }
 .list-row > span { min-width: 0; overflow-wrap: anywhere; }

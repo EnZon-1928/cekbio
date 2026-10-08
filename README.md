@@ -191,8 +191,10 @@ The commands below use Debian/Ubuntu. For another distribution, use its package 
 The dashboard has three sections:
 
 - **Senders** — add a sender and manage its local session.
-- **Scan** — upload or select a `.txt` target list, select a sender, configure batch size, and monitor progress.
+- **Scan** — upload or select a `.txt` target list or `.xlsx` workbook, select a sender, configure batch size, and monitor progress.
 - **Results** — search, filter, download, or remove generated results. Only categories with findings are listed.
+
+XLSX uploads are processed locally. cekbio reads all worksheets and cells, keeps phone-number candidates with at least six digits in their original order (including duplicates), and converts them into a `.txt` target list. The XLSX source is not retained. Files are limited to 10 MB and a combined worksheet range of one million cells per workbook. For reliable results, store long phone numbers and numbers with leading zeroes as text in Excel; numeric cells may already have lost leading zeroes or precision before upload.
 
 The existing CLI remains available:
 
@@ -249,7 +251,7 @@ Android may stop Termux when it is in the background or under battery pressure. 
 - Node.js 20 or newer and npm.
 - Git is required to clone the project and install its Git-hosted dependencies.
 - Add a sender session in the dashboard before starting a scan, or use an existing `session_*` folder.
-- Target uploads must be `.txt` files up to 10 MB.
+- Target uploads may be `.txt` files or `.xlsx` workbooks up to 10 MB.
 - New text result files use the `result_` prefix, for example `result_business_targets.txt`. Internal `target_*` JSON files remain on disk for recovery and are not listed in the dashboard.
 - Older `report_*.txt` files are left untouched, not shown in Results, and excluded from target discovery.
 - The scanner's batch behavior, result content, and checkpoint format remain unchanged. Pause and cancel controls are not provided.

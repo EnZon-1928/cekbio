@@ -585,18 +585,43 @@ elements.upload.addEventListener('change', async () => {
     const file = elements.upload.files[0];
     if (!file) return;
     try {
-        if (!file.name.toLowerCase().endsWith('.txt') || file.size > 10 * 1024 * 1024) {
-            throw new Error('Select a .txt file no larger than 10 MB.');
+        if (file.size > 10 * 1024 * 1024) {
+            throw new Error('Select a file no larger than 10 MB.');
         }
-        await request('/api/targets', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ name: file.name, contents: await file.text() })
-        });
+
+        const extension = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
+        let target;
+        let successMessage;
+        if (extension === '.txt') {
+            const result = await request('/api/targets', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ name: file.name, contents: await file.text() })
+            });
+            target = result.target;
+            successMessage = `${target} uploaded successfully.`;
+        } else if (extension === '.xlsx') {
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            let binary = '';
+            const chunkSize = 0x8000;
+            for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+                binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+            }
+            const result = await request('/api/targets/xlsx', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ name: file.name, contentsBase64: btoa(binary) })
+            });
+            target = result.target;
+            successMessage = result.message;
+        } else {
+            throw new Error('Select a .txt or .xlsx file no larger than 10 MB.');
+        }
+
         await refreshTargets();
-        elements.target.value = file.name;
+        elements.target.value = target;
         updateCheckpoint();
-        showMessage(`${file.name} uploaded successfully.`);
+        showMessage(successMessage);
     } catch (error) {
         showMessage(error.message, true);
     } finally {
