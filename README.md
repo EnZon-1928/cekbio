@@ -1,35 +1,70 @@
+<div align="center">
+
 # cekbio
 
-cekbio is a local Node.js CLI and web interface for managing sender sessions, scanning target lists, and saving text results and internal JSON data.
+**Scan WhatsApp account lists from a simple, local web dashboard.**
 
-## Requirements
+Manage sender sessions, scan target lists, and review results from your own device.
 
-- Node.js 20 or newer and npm
-- Git (required to clone the project and install its Git-hosted dependencies)
-- An existing `session_*` folder to run a scan; sender sessions can also be added from the web dashboard
+[![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white)](#requirements-and-behavior)
+[![Android, Windows, Linux](https://img.shields.io/badge/Platforms-Android%20%7C%20Windows%20%7C%20Linux-3973a5)](#choose-your-platform)
+[![Local only](https://img.shields.io/badge/Operation-Local%20only-17825d)](#your-data-stays-local)
 
-## Android (Termux, no root)
+</div>
 
-The web dashboard runs locally on the Android device. Root access, an emulator, and shared-storage access are not required.
+## 🚀 Get started
 
-### Quick setup
+### Android
 
-1. Install Termux from one of the sources listed in the [official Termux installation instructions](https://github.com/termux/termux-app#installation). Install/update Termux from the same source; do not mix builds from different sources.
-2. Open Termux and run:
+1. Install [Termux](https://github.com/termux/termux-app#installation) from one of its official sources. Install and update Termux from the same source.
+2. Open Termux. If `curl` is not available, install it first:
+
+   ```sh
+   pkg update
+   pkg install -y curl
+   ```
+
+3. Run the setup command:
 
    ```sh
    curl -fsSL https://raw.githubusercontent.com/EnZon-1928/cekbio/main/scripts/setup-termux.sh | bash
    ```
 
-   The script checks for Termux prerequisites, installs only missing packages, uses a cekbio project in the current private Termux home when possible or clones it into `$HOME/cekbio`, checks the Node.js dependencies, starts the web server, and asks Android to open the default browser. If Chrome is the default browser, it opens in Chrome. Review the [setup script](./scripts/setup-termux.sh) before running it if you want to inspect what it does; piping a remote script to Bash executes that code on your device.
+4. The setup checks and installs missing requirements, downloads cekbio, installs dependencies, starts the dashboard, and asks Android to open your default browser. Keep Termux open while using cekbio.
 
-   The script does not overwrite an unrelated folder, delete app data, or automatically pull changes into an existing clone. To update an existing clone, review your changes and update it manually with `git pull --ff-only`.
-3. Keep Termux open while using the dashboard. If the browser does not open automatically, open `http://127.0.0.1:3000` manually.
+> [!IMPORTANT]
+> This command downloads and executes the setup script. [Review the script](./scripts/setup-termux.sh) before running it if you want to inspect its actions.
 
-### Manual Android setup
+### Choose your platform
 
-1. Install and open Termux using the official source above. No root access is needed.
-2. Install/update Termux packages:
+| Platform | Start here |
+| --- | --- |
+| 📱 Android | [Termux quick setup](#android) · [Manual steps](#android-manual-setup) |
+| 🪟 Windows | [Manual setup](#windows-manual-setup) |
+| 🐧 Linux | [Manual setup](#linux-manual-setup) |
+
+## 🧭 How it works
+
+**Senders** → **Scan** → **Results**
+
+Add or select a sender session, choose a `.txt` target list, then review the generated results in the dashboard.
+
+## 🔒 Your data stays local
+
+- Sender sessions, target lists, checkpoints, and results are stored in the application directory on your device.
+- The web server listens on `127.0.0.1` and is intended for use from the same device. Do not expose it through a public proxy, tunnel, or port forwarding.
+- Keep the application directory private. It contains WhatsApp session credentials and scan data.
+- On Android, keep Termux open during a scan. Android may stop background processes to save battery; battery settings and wake locks cannot guarantee that it will keep running.
+
+## 📖 Manual setup
+
+<details>
+<summary>📱 Android with Termux</summary>
+
+### Android manual setup
+
+1. Install and open [Termux](https://github.com/termux/termux-app#installation). No root access or shared-storage permission is required.
+2. Update Termux and install Git, Node.js, and curl:
 
    ```sh
    pkg update
@@ -37,7 +72,7 @@ The web dashboard runs locally on the Android device. Root access, an emulator, 
    pkg install -y git nodejs-lts curl
    ```
 
-3. Check that Node.js is version 20 or newer and that npm is available:
+3. Check the installed tools. Node.js 20 or newer is required:
 
    ```sh
    node --version
@@ -45,7 +80,7 @@ The web dashboard runs locally on the Android device. Root access, an emulator, 
    git --version
    ```
 
-4. Clone the repository into Termux's private home directory. Avoid `$HOME/storage/shared` or other shared-storage folders; keeping the project in `$HOME` avoids execution-permission issues and helps protect WhatsApp sessions and scan data.
+4. Clone cekbio into Termux's private home directory. Do not put the project in shared storage:
 
    ```sh
    cd "$HOME"
@@ -55,36 +90,34 @@ The web dashboard runs locally on the Android device. Root access, an emulator, 
    git config --local --add url."https://github.com/".insteadOf "git@github.com:"
    ```
 
-   The GitHub-hosted dependencies are public. These per-project URL rewrites let Git fetch them over HTTPS without requiring a GitHub SSH key; they do not change your global Git configuration.
+   These repository-local Git settings let Git fetch public GitHub dependencies over HTTPS without an SSH key. They do not change your global Git configuration.
 
-5. Install dependencies and start the web interface:
+5. Install dependencies and run cekbio:
 
    ```sh
    npm install
    npm run web
    ```
 
-6. Open `http://127.0.0.1:3000` in Chrome or another browser on the same phone. Keep the Termux process running while using the page. Press **Ctrl+C** in Termux to stop the server.
+6. Open `http://127.0.0.1:3000` in a browser on the same phone. Keep Termux open and press **Ctrl+C** in Termux when you want to stop the server.
 
-### Android background behavior and data
+</details>
 
-- Android may stop background processes to save battery. Keep Termux open and, if Android offers the setting, allow Termux unrestricted battery use while scanning. Battery settings and wake locks cannot guarantee that Android will never stop the process.
-- The script does not require `termux-setup-storage` or the Termux:API companion app. Keep sender sessions, targets, checkpoints, and results in the app's private Termux directory.
-- The dashboard server binds only to `127.0.0.1`; it is intended to be accessed from the same device. Do not expose it through a network tunnel or port forwarding.
-- Stop scans/sender operations before closing Termux. Do not run the CLI and web interface against the same sender session at the same time.
+<details>
+<summary>🐧 Linux</summary>
 
-## Linux (manual setup)
+### Linux manual setup
 
-The commands below are for Debian/Ubuntu. Use your distribution's package manager on other Linux distributions, and ensure it provides Node.js 20 or newer.
+The commands below use Debian/Ubuntu. For another distribution, use its package manager to install Git and curl.
 
-1. Install Git and curl. The following package command is for Debian/Ubuntu:
+1. Install Git and curl:
 
    ```sh
    sudo apt update
    sudo apt install -y git curl
    ```
 
-   Install Node Version Manager (nvm), then install the current Node.js LTS release (Node.js 20 or newer is required):
+2. Install [nvm](https://github.com/nvm-sh/nvm) and Node.js LTS (Node.js 20 or newer is required):
 
    ```sh
    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
@@ -96,9 +129,7 @@ The commands below are for Debian/Ubuntu. Use your distribution's package manage
    git --version
    ```
 
-   For other Linux distributions, install `git` and `curl` with the system package manager, then follow the same nvm commands.
-
-2. Clone the repository and install dependencies:
+3. Clone the project, configure Git to fetch public GitHub dependencies over HTTPS, and install dependencies:
 
    ```sh
    git clone https://github.com/EnZon-1928/cekbio.git
@@ -108,18 +139,23 @@ The commands below are for Debian/Ubuntu. Use your distribution's package manage
    npm install
    ```
 
-3. Start the web interface:
+4. Start cekbio and open the local URL:
 
    ```sh
    npm run web
    ```
 
-4. Open `http://127.0.0.1:3000` in a browser on the same computer. Press **Ctrl+C** in the terminal to stop the server.
+   Open `http://127.0.0.1:3000` in a browser on the same computer. Press **Ctrl+C** in the terminal to stop the server.
 
-## Windows (manual setup)
+</details>
 
-1. Install Node.js 20 or newer from [nodejs.org](https://nodejs.org/en/download) and Git for Windows from [git-scm.com](https://git-scm.com/download/win).
-2. Open PowerShell and verify that Node.js, npm, and Git are available:
+<details>
+<summary>🪟 Windows</summary>
+
+### Windows manual setup
+
+1. Install [Node.js 20 or newer](https://nodejs.org/en/download) and [Git for Windows](https://git-scm.com/download/win).
+2. Open PowerShell and check the tools:
 
    ```powershell
    node --version
@@ -127,7 +163,7 @@ The commands below are for Debian/Ubuntu. Use your distribution's package manage
    git --version
    ```
 
-3. Clone the project into a Windows directory, install its dependencies, and start the web interface:
+3. Clone the project, configure Git to fetch public GitHub dependencies over HTTPS, and install dependencies:
 
    ```powershell
    Set-Location $HOME
@@ -136,45 +172,91 @@ The commands below are for Debian/Ubuntu. Use your distribution's package manage
    git config --local --add url."https://github.com/".insteadOf "ssh://git@github.com/"
    git config --local --add url."https://github.com/".insteadOf "git@github.com:"
    npm install
+   ```
+
+   Install dependencies in this Windows project directory. Do not reuse `node_modules` from WSL/Linux; native packages and paths are platform-specific.
+
+4. Start cekbio:
+
+   ```powershell
    npm run web
    ```
 
-4. Open `http://127.0.0.1:3000` in a browser on the same computer. Press **Ctrl+C** in PowerShell to stop the server.
+   Open `http://127.0.0.1:3000` in a browser on the same computer. Press **Ctrl+C** in PowerShell to stop the server.
 
-   Install dependencies separately in the Windows project directory. Do not reuse `node_modules` from WSL/Linux; native packages and paths are platform-specific.
+</details>
 
-## Run the CLI
+## 🖥️ Using the dashboard
 
-From the project directory, run:
+The dashboard has three sections:
+
+- **Senders** — add a sender and manage its local session.
+- **Scan** — upload or select a `.txt` target list, select a sender, configure batch size, and monitor progress.
+- **Results** — search, filter, download, or remove generated results. Only categories with findings are listed.
+
+The existing CLI remains available:
 
 ```sh
 node index.js
 ```
 
-The terminal menu remains available and uses the same sender, scan, checkpoint, and result-saving logic.
+Use either the CLI or web dashboard at a time. Do not open the same sender session in both processes simultaneously.
 
-## Web interface behavior and local data
+## 🛠️ Troubleshooting
 
-The web panel can add and check sender sessions, upload `.txt` target files (up to 10 MB), start and monitor scans, resume or discard an existing checkpoint, and download generated text results. New text result files use the `result_` prefix, such as `result_business_targets.txt`. Categories with no findings are not shown in Results. Internal JSON result files remain in the application directory for scan recovery and are not listed in the dashboard. Individual target lists and text results can be removed after confirmation; removing a target list also removes its checkpoint, but does not remove its generated results.
+<details>
+<summary>The dashboard did not open in my browser</summary>
 
-Uploaded targets, sender sessions, checkpoints, and generated data are stored in the application's working directory. Keep this directory private because it contains WhatsApp session credentials, target lists, and result data.
+Keep the terminal running, then open `http://127.0.0.1:3000` manually in a browser on the same device.
 
-During a scan, the dashboard shows the in-memory account summary, batch status, and the number of targets completed at batch boundaries. Use the Results search and category filter to narrow the visible text results; these controls do not change or delete result files.
+</details>
 
-Older `report_*.txt` files are left untouched but are no longer listed or managed from the Results tab. They are also excluded from target-file discovery so they cannot accidentally be scanned as input.
+<details>
+<summary>The server says the port is already in use</summary>
 
-The scanner's existing batch behavior, result content format, and checkpoint format are retained. Pause and cancel controls are not provided. Use either the CLI or web interface at a time; do not open the same sender session in both processes simultaneously.
-
-Use **Shut down** in the dashboard to stop the local Node.js application. It does not shut down the operating system. The application refuses to shut down while a scan or sender operation is active; wait for the operation to finish and try again.
-
-To use another local port, set `PORT` before starting the web server, for example:
+Stop the other cekbio process with **Ctrl+C**, or start cekbio on a different port:
 
 ```sh
 PORT=3001 npm run web
 ```
 
-On Android, set the same variable before running the Termux setup script to use a different port:
+For the Android setup script, use:
 
 ```sh
 PORT=3001 bash <(curl -fsSL https://raw.githubusercontent.com/EnZon-1928/cekbio/main/scripts/setup-termux.sh)
+```
+
+Then open `http://127.0.0.1:3001`.
+
+</details>
+
+<details>
+<summary>Dependency installation failed</summary>
+
+Confirm that the device has an internet connection and Git is installed, then retry `npm install` from the cekbio project directory. On Windows, run it in the Windows directory, not from WSL.
+
+</details>
+
+<details>
+<summary>Android stopped the scan or server</summary>
+
+Android may stop Termux when it is in the background or under battery pressure. Keep Termux open during scans and, if available, allow unrestricted battery use for Termux. If the process has stopped, reopen Termux and start cekbio again.
+
+</details>
+
+## ⚙️ Requirements and behavior
+
+- Node.js 20 or newer and npm.
+- Git is required to clone the project and install its Git-hosted dependencies.
+- Add a sender session in the dashboard before starting a scan, or use an existing `session_*` folder.
+- Target uploads must be `.txt` files up to 10 MB.
+- New text result files use the `result_` prefix, for example `result_business_targets.txt`. Internal `target_*` JSON files remain on disk for recovery and are not listed in the dashboard.
+- Older `report_*.txt` files are left untouched, not shown in Results, and excluded from target discovery.
+- The scanner's batch behavior, result content, and checkpoint format remain unchanged. Pause and cancel controls are not provided.
+- Use **Shut down** in the dashboard to stop the local Node.js application. It does not shut down the operating system and refuses to stop while a scan or sender operation is active.
+
+To choose a different web port:
+
+```sh
+PORT=3001 npm run web
 ```
