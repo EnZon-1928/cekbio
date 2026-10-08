@@ -38,6 +38,41 @@ const elements = {
     statDescriptions: $('#stat-descriptions')
 };
 
+const navigationTabs = [...document.querySelectorAll('.nav-tab')];
+const navigationPanels = navigationTabs.map(tab => document.getElementById(tab.getAttribute('aria-controls')));
+
+const activateView = (viewName, focusTab = false) => {
+    const activeTab = navigationTabs.find(tab => tab.dataset.view === viewName);
+    if (!activeTab) return;
+
+    for (const tab of navigationTabs) {
+        const selected = tab === activeTab;
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+    }
+    for (const panel of navigationPanels) {
+        panel.hidden = panel.id !== activeTab.getAttribute('aria-controls');
+    }
+    if (focusTab) activeTab.focus();
+};
+
+for (const tab of navigationTabs) {
+    tab.addEventListener('click', () => activateView(tab.dataset.view));
+    tab.addEventListener('keydown', event => {
+        const currentIndex = navigationTabs.indexOf(tab);
+        let nextIndex;
+        if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % navigationTabs.length;
+        else if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + navigationTabs.length) % navigationTabs.length;
+        else if (event.key === 'Home') nextIndex = 0;
+        else if (event.key === 'End') nextIndex = navigationTabs.length - 1;
+        else return;
+
+        event.preventDefault();
+        const nextTab = navigationTabs[nextIndex];
+        activateView(nextTab.dataset.view, true);
+    });
+}
+
 let confirmationResolver = null;
 let confirmationCloseTimer = null;
 
@@ -447,6 +482,16 @@ const formatScanLog = ({ timestamp, context, message }) => {
 const displayStatus = (result) => {
     const scan = result.scan;
     const sender = result.sender;
+    const senderIsActive = ['starting', 'running'].includes(sender?.status);
+    const scanIsActive = ['starting', 'running'].includes(scan?.status);
+    const senderTab = $('#nav-senders');
+    const scanTab = $('#nav-scan');
+    const senderActivity = $('#nav-senders-activity');
+    const scanActivity = $('#nav-scan-activity');
+    senderActivity.hidden = !senderIsActive;
+    scanActivity.hidden = !scanIsActive;
+    senderTab.setAttribute('aria-label', senderIsActive ? 'Senders, operation in progress' : 'Senders');
+    scanTab.setAttribute('aria-label', scanIsActive ? 'Scan, operation in progress' : 'Scan');
     renderSummary(scan);
     if (sender) {
         elements.senderJob.hidden = false;
@@ -532,6 +577,8 @@ elements.reportCategory.addEventListener('change', renderReports);
 $('#refresh').addEventListener('click', () => {
     Promise.all([refreshTargets(), refreshSenders(), refreshReports(), pollStatus()])
         .catch(error => showMessage(error.message, true));
+
+    activateView('scan');
 });
 $('#upload-trigger').addEventListener('click', () => elements.upload.click());
 elements.upload.addEventListener('change', async () => {

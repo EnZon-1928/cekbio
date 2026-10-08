@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>cekbio | WhatsApp Account Scanner</title>
     <link rel="stylesheet" href="/style.css">
     <script src="/app.js" defer></script>
@@ -32,70 +32,78 @@
         </div>
     </header>
 
-    <main>
-        <section class="intro">
-            <p class="eyebrow">WHATSAPP ACCOUNT SCANNER</p>
-            <h1>Manage your scanning workflow.</h1>
-            <p>Manage sender sessions, scan target lists, and review results from one dashboard.</p>
-        </section>
+    <nav class="floating-nav" aria-label="Main navigation" role="tablist">
+        <button id="nav-senders" class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-senders" tabindex="-1" data-view="senders">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <circle cx="9" cy="8" r="3.5"></circle>
+                <path d="M2.8 19a6.2 6.2 0 0 1 12.4 0"></path>
+                <path d="M16 5.2a3.5 3.5 0 0 1 0 6.6M17.5 14a5.2 5.2 0 0 1 3.7 5"></path>
+            </svg>
+            <span>Senders</span>
+            <i id="nav-senders-activity" class="nav-activity" aria-hidden="true" hidden></i>
+        </button>
+        <button id="nav-scan" class="nav-tab" type="button" role="tab" aria-selected="true" aria-controls="view-scan" tabindex="0" data-view="scan">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <circle cx="10.5" cy="10.5" r="6.5"></circle>
+                <path d="m15.5 15.5 5 5M10.5 7v7M7 10.5h7"></path>
+            </svg>
+            <span>Scan</span>
+            <i id="nav-scan-activity" class="nav-activity" aria-hidden="true" hidden></i>
+        </button>
+        <button id="nav-reports" class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-reports" tabindex="-1" data-view="reports">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M6 3.5h8l4 4V20.5H6z"></path>
+                <path d="M14 3.5v4h4M9 12h6M9 15.5h6"></path>
+            </svg>
+            <span>Reports</span>
+        </button>
+    </nav>
 
+    <main>
         <div id="message" class="message" role="status" hidden></div>
 
-        <section class="summary-section" aria-labelledby="summary-heading">
-            <div class="summary-heading">
-                <div>
-                    <p class="eyebrow">OVERVIEW</p>
-                    <h2 id="summary-heading">Scan summary</h2>
-                </div>
-                <span id="summary-context" class="summary-context">No scan data available</span>
+        <section id="view-scan" class="page-view" role="tabpanel" aria-labelledby="nav-scan" tabindex="0">
+            <div class="intro">
+                <p class="eyebrow">WHATSAPP ACCOUNT SCANNER</p>
+                <h1>Manage your scanning workflow.</h1>
+                <p>Choose a target list and sender, then monitor scan activity and results.</p>
             </div>
-            <div class="summary-grid">
-                <article class="summary-card">
-                    <span>Business</span>
-                    <strong id="stat-business">—</strong>
-                    <small>accounts found</small>
-                </article>
-                <article class="summary-card">
-                    <span>Personal</span>
-                    <strong id="stat-personal">—</strong>
-                    <small>accounts found</small>
-                </article>
-                <article class="summary-card">
-                    <span>Unregistered</span>
-                    <strong id="stat-unregistered">—</strong>
-                    <small>numbers checked</small>
-                </article>
-                <article class="summary-card">
-                    <span>Business descriptions</span>
-                    <strong id="stat-descriptions">—</strong>
-                    <small>with description</small>
-                </article>
-            </div>
-        </section>
 
-        <section class="layout">
-            <article class="card">
-                <div class="card-heading">
-                    <div><p class="eyebrow">01 / SENDERS</p><h2>Sender sessions</h2></div>
-                    <button id="refresh" class="icon-button" type="button" title="Refresh dashboard">↻</button>
+            <section class="summary-section" aria-labelledby="summary-heading">
+                <div class="summary-heading">
+                    <div>
+                        <p class="eyebrow">OVERVIEW</p>
+                        <h2 id="summary-heading">Scan summary</h2>
+                    </div>
+                    <span id="summary-context" class="summary-context">No scan data available</span>
                 </div>
-                <form id="sender-form" class="inline-form">
-                    <label class="sr-only" for="phone">Sender phone number</label>
-                    <input id="phone" name="phoneNumber" type="tel" placeholder="Phone number, e.g. 62812..." required>
-                    <button class="button secondary" type="submit">Add sender</button>
-                </form>
-                <p class="hint">The pairing code will appear here. Sender sessions are stored on this device.</p>
-                <div class="sender-tools">
-                    <button id="check-all" class="text-button" type="button">Check all senders</button>
-                    <button id="clean-senders" class="text-button danger" type="button">Remove inactive senders</button>
+                <div class="summary-grid">
+                    <article class="summary-card">
+                        <span>Business</span>
+                        <strong id="stat-business">—</strong>
+                        <small>accounts found</small>
+                    </article>
+                    <article class="summary-card">
+                        <span>Personal</span>
+                        <strong id="stat-personal">—</strong>
+                        <small>accounts found</small>
+                    </article>
+                    <article class="summary-card">
+                        <span>Unregistered</span>
+                        <strong id="stat-unregistered">—</strong>
+                        <small>numbers checked</small>
+                    </article>
+                    <article class="summary-card">
+                        <span>Business descriptions</span>
+                        <strong id="stat-descriptions">—</strong>
+                        <small>with description</small>
+                    </article>
                 </div>
-                <div id="sender-job" class="sender-job" hidden></div>
-                <div id="senders" class="list"></div>
-            </article>
+            </section>
 
             <article class="card scan-card">
                 <div class="card-heading">
-                    <div><p class="eyebrow">02 / SCAN</p><h2>Start a scan</h2></div>
+                    <div><p class="eyebrow">SCAN</p><h2>Start a scan</h2></div>
                     <span id="scan-state" class="status-pill">Ready</span>
                 </div>
                 <form id="scan-form" class="stack">
@@ -127,10 +135,43 @@
                 <div class="logs-heading"><strong>Scan activity</strong><span>Recent events</span></div>
                 <pre id="logs" class="logs">No scan activity yet.</pre>
             </article>
+        </section>
 
+        <section id="view-senders" class="page-view" role="tabpanel" aria-labelledby="nav-senders" tabindex="0" hidden>
+            <div class="intro">
+                <p class="eyebrow">SENDER MANAGEMENT</p>
+                <h1>Sender sessions</h1>
+                <p>Add, check, and manage the WhatsApp sender sessions used for scanning.</p>
+            </div>
+            <article class="card">
+                <div class="card-heading">
+                    <div><p class="eyebrow">SENDERS</p><h2>Manage sessions</h2></div>
+                    <button id="refresh" class="icon-button" type="button" title="Refresh dashboard">↻</button>
+                </div>
+                <form id="sender-form" class="inline-form">
+                    <label class="sr-only" for="phone">Sender phone number</label>
+                    <input id="phone" name="phoneNumber" type="tel" placeholder="Phone number, e.g. 62812..." required>
+                    <button class="button secondary" type="submit">Add sender</button>
+                </form>
+                <p class="hint">The pairing code will appear here. Sender sessions are stored on this device.</p>
+                <div class="sender-tools">
+                    <button id="check-all" class="text-button" type="button">Check all senders</button>
+                    <button id="clean-senders" class="text-button danger" type="button">Remove inactive senders</button>
+                </div>
+                <div id="sender-job" class="sender-job" hidden></div>
+                <div id="senders" class="list"></div>
+            </article>
+        </section>
+
+        <section id="view-reports" class="page-view" role="tabpanel" aria-labelledby="nav-reports" tabindex="0" hidden>
+            <div class="intro">
+                <p class="eyebrow">SCAN RESULTS</p>
+                <h1>Reports</h1>
+                <p>Search, filter, download, or remove generated text reports.</p>
+            </div>
             <article class="card reports-card">
                 <div class="card-heading">
-                    <div><p class="eyebrow">03 / RESULTS</p><h2>Reports</h2></div>
+                    <div><p class="eyebrow">RESULTS</p><h2>Generated reports</h2></div>
                 </div>
                 <p class="hint">Search and filter generated reports. Internal scan data remains stored locally.</p>
                 <div class="report-filters">

@@ -15,6 +15,7 @@
 [hidden] { display: none !important; }
 body { margin: 0; color: var(--ink); background: var(--paper); }
 button, input, select { font: inherit; }
+button:focus-visible, a:focus-visible { outline: 3px solid #17825d55; outline-offset: 3px; }
 .topbar { height: 72px; display: flex; align-items: center; justify-content: space-between; padding: 0 max(24px, calc((100vw - 1120px) / 2)); background: #fff; border-bottom: 1px solid var(--line); }
 .brand { display: flex; align-items: center; gap: 11px; color: var(--ink); text-decoration: none; }
 .brand-mark { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 12px; background: linear-gradient(145deg, #1d9870, #116647); box-shadow: 0 3px 8px #11664726; }
@@ -30,14 +31,14 @@ button, input, select { font: inherit; }
 .shutdown-button:hover:not(:disabled) { border-color: #e8bebe; background: #fff7f7; }
 .shutdown-button:disabled { opacity: .55; cursor: wait; }
 .shutdown-button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
-main { max-width: 1120px; margin: 0 auto; padding: 47px 24px 24px; }
+main { max-width: 1120px; margin: 0 auto; padding: 47px 24px calc(116px + env(safe-area-inset-bottom)); }
 .intro { margin-bottom: 28px; }
 .eyebrow { margin: 0 0 8px; color: var(--green); font-size: 10px; font-weight: 800; letter-spacing: .11em; }
 h1 { margin: 0; font-size: clamp(29px, 4vw, 40px); letter-spacing: -.045em; }
 .intro > p:last-child { margin: 10px 0 0; color: var(--muted); font-size: 14px; }
-.layout { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 18px; }
+.page-view > .card { max-width: 860px; }
+.page-view > .scan-card { max-width: none; }
 .card { min-width: 0; padding: 23px; border: 1px solid var(--line); border-radius: 16px; background: #fff; box-shadow: 0 5px 18px #20372c08; }
-.scan-card { grid-row: span 2; }
 .card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 21px; }
 .card-heading .eyebrow { margin-bottom: 5px; }
 h2 { margin: 0; font-size: 18px; letter-spacing: -.025em; }
@@ -104,6 +105,13 @@ input:focus, select:focus { border-color: #68b394; box-shadow: 0 0 0 3px #1b9562
 .report-filters { display: grid; grid-template-columns: minmax(0, 1fr) 155px; gap: 9px; margin: 0 0 8px; }
 .report-filters input, .report-filters select { height: 38px; font-size: 11px; }
 .report-filters input[type=search]::-webkit-search-cancel-button { cursor: pointer; }
+.floating-nav { position: fixed; z-index: 5; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom)); display: flex; width: min(390px, calc(100vw - 32px)); gap: 4px; padding: 6px; border: 1px solid #dfe8e2; border-radius: 18px; background: #ffffffed; box-shadow: 0 10px 34px #17231f20, 0 2px 8px #17231f0a; backdrop-filter: blur(18px); transform: translateX(-50%); }
+.nav-tab { position: relative; flex: 1; min-width: 0; min-height: 54px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 13px; border: 0; border-radius: 13px; color: #69776f; background: transparent; font-size: 12px; font-weight: 700; cursor: pointer; transition: color 150ms ease, background 150ms ease, transform 150ms ease; }
+.nav-tab svg { width: 19px; height: 19px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
+.nav-tab[aria-selected="true"] { color: var(--green-dark); background: var(--mint); }
+.nav-tab:active { transform: scale(.97); }
+.nav-tab:focus-visible { outline-offset: 1px; }
+.nav-activity { position: absolute; top: 9px; right: calc(50% - 27px); width: 7px; height: 7px; border: 1px solid #fff; border-radius: 50%; background: #db9418; box-shadow: 0 0 0 2px #fff; }
 .confirmation-dialog { width: min(440px, calc(100vw - 32px)); max-width: none; margin: auto; padding: 28px; border: 1px solid #e8eeea; border-radius: 18px; color: var(--ink); background: #fff; box-shadow: 0 24px 80px #12251d30; opacity: 0; transform: translateY(10px) scale(.985); transition: opacity 160ms ease, transform 160ms ease; }
 .confirmation-dialog.is-visible { opacity: 1; transform: translateY(0) scale(1); }
 .confirmation-dialog::backdrop { background: #10201900; backdrop-filter: blur(0); transition: background 160ms ease, backdrop-filter 160ms ease; }
@@ -122,7 +130,7 @@ input:focus, select:focus { border-color: #68b394; box-shadow: 0 0 0 3px #1b9562
 .confirmation-dialog:not([open]) { display: none; }
 footer { padding: 29px 0 12px; color: #99a59e; text-align: center; font-size: 10px; }
 @media (prefers-reduced-motion: reduce) {
-    .confirmation-dialog, .confirmation-dialog::backdrop { transition-duration: 1ms; }
+    .confirmation-dialog, .confirmation-dialog::backdrop, .nav-tab { transition-duration: 1ms; }
 }
 @media (max-width: 760px) {
     .topbar { height: 62px; padding: 0 18px; }
@@ -133,16 +141,20 @@ footer { padding: 29px 0 12px; color: #99a59e; text-align: center; font-size: 10
     .shutdown-button { width: 36px; justify-content: center; padding: 0; }
     .shutdown-button span { display: none; }
     .confirmation-dialog { padding: 23px; border-radius: 16px; }
-    main { padding: 34px 16px 20px; }
-    .layout { grid-template-columns: 1fr; }
-    .scan-card { grid-row: auto; }
+    main { padding: 34px 16px calc(108px + env(safe-area-inset-bottom)); }
     .card { padding: 19px; }
     .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .summary-card { padding: 13px 14px; }
     .summary-card strong { font-size: 22px; }
     .report-filters { grid-template-columns: minmax(0, 1fr) 140px; }
+    .floating-nav { bottom: calc(10px + env(safe-area-inset-bottom)); border-radius: 17px; }
+    .nav-tab { min-height: 52px; padding: 0 9px; }
 }
 @media (max-width: 420px) {
     .summary-heading { align-items: start; flex-direction: column; gap: 5px; }
     .report-filters { grid-template-columns: 1fr; }
+    .floating-nav { width: calc(100vw - 24px); }
+    .nav-tab { flex-direction: column; gap: 3px; min-height: 54px; padding: 4px 6px; font-size: 10px; }
+    .nav-tab svg { width: 18px; height: 18px; }
+    .nav-activity { top: 7px; right: calc(50% - 18px); }
 }
