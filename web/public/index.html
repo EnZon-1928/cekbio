@@ -168,13 +168,13 @@
             <div class="intro">
                 <p class="eyebrow">SCAN RESULTS</p>
                 <h1>Results</h1>
-                <p>Search, filter, download, or remove generated scan results.</p>
+                <p>Search, preview, download, or remove generated scan results.</p>
             </div>
             <article class="card results-card">
                 <div class="card-heading">
                     <div><p class="eyebrow">RESULTS</p><h2>Generated results</h2></div>
                 </div>
-                <p class="hint">Search and filter generated results. Internal scan data remains stored locally.</p>
+                <p class="hint">Search and filter generated results, or preview a file before downloading. Internal scan data remains stored locally.</p>
                 <div class="result-filters">
                     <label class="sr-only" for="result-search">Search results</label>
                     <input id="result-search" type="search" placeholder="Search results..." autocomplete="off">
@@ -205,6 +205,25 @@
         <div class="confirmation-actions">
             <button id="confirmation-cancel" class="button secondary" type="button">Cancel</button>
             <button id="confirmation-accept" class="button danger-button" type="button">Confirm</button>
+        </div>
+    </dialog>
+    <dialog id="result-preview-dialog" class="result-preview-dialog" aria-labelledby="result-preview-title">
+        <div class="preview-heading">
+            <div>
+                <p class="eyebrow">RESULT PREVIEW</p>
+                <h2 id="result-preview-title"></h2>
+            </div>
+            <button id="result-preview-dismiss" class="icon-button" type="button" aria-label="Close result preview">×</button>
+        </div>
+        <label class="preview-search" for="result-preview-search">
+            Search this result
+            <input id="result-preview-search" type="search" placeholder="Find text in this file..." autocomplete="off">
+        </label>
+        <p id="result-preview-search-status" class="preview-search-status" aria-live="polite"></p>
+        <pre id="result-preview-content" class="preview-content" tabindex="0"></pre>
+        <div class="preview-actions">
+            <a id="result-preview-download" class="button secondary" href="#">Download</a>
+            <button id="result-preview-close" class="button secondary" type="button">Close</button>
         </div>
     </dialog>
 </body>

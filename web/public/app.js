@@ -31,6 +31,14 @@ const elements = {
     results: $('#results'),
     resultSearch: $('#result-search'),
     resultCategory: $('#result-category'),
+    resultPreviewDialog: $('#result-preview-dialog'),
+    resultPreviewTitle: $('#result-preview-title'),
+    resultPreviewSearch: $('#result-preview-search'),
+    resultPreviewSearchStatus: $('#result-preview-search-status'),
+    resultPreviewContent: $('#result-preview-content'),
+    resultPreviewDownload: $('#result-preview-download'),
+    resultPreviewDismiss: $('#result-preview-dismiss'),
+    resultPreviewClose: $('#result-preview-close'),
     summaryContext: $('#summary-context'),
     statBusiness: $('#stat-business'),
     statPersonal: $('#stat-personal'),
@@ -173,6 +181,8 @@ let targets = [];
 let checkpoints = {};
 let senders = [];
 let results = [];
+let previewText = '';
+let previewRequestId = 0;
 
 const request = async (url, options) => {
     const response = await fetch(url, options);
@@ -265,6 +275,72 @@ const refreshResults = async () => {
     renderResults();
 };
 
+const renderResultPreview = () => {
+    const query = elements.resultPreviewSearch.value.trim();
+    const content = elements.resultPreviewContent;
+    content.replaceChildren();
+
+    if (!query) {
+        content.textContent = previewText;
+        elements.resultPreviewSearchStatus.textContent = previewText
+            ? 'Search within this result or read the full file below.'
+            : 'This result file is empty.';
+        return;
+    }
+
+    const normalizedText = previewText.toLocaleLowerCase();
+    const normalizedQuery = query.toLocaleLowerCase();
+    let offset = 0;
+    let matchCount = 0;
+    let matchIndex = normalizedText.indexOf(normalizedQuery, offset);
+    while (matchIndex !== -1) {
+        content.append(document.createTextNode(previewText.slice(offset, matchIndex)));
+        const mark = document.createElement('mark');
+        mark.textContent = previewText.slice(matchIndex, matchIndex + query.length);
+        content.append(mark);
+        offset = matchIndex + query.length;
+        matchCount++;
+        matchIndex = normalizedText.indexOf(normalizedQuery, offset);
+    }
+    content.append(document.createTextNode(previewText.slice(offset)));
+    elements.resultPreviewSearchStatus.textContent = matchCount
+        ? `${matchCount.toLocaleString()} ${matchCount === 1 ? 'match' : 'matches'} found.`
+        : 'No matches found.';
+};
+
+const openResultPreview = async filename => {
+    const requestId = ++previewRequestId;
+    previewText = '';
+    elements.resultPreviewTitle.textContent = filename;
+    elements.resultPreviewSearch.value = '';
+    elements.resultPreviewSearch.disabled = true;
+    elements.resultPreviewSearchStatus.textContent = 'Loading result preview...';
+    elements.resultPreviewContent.textContent = 'Loading...';
+    elements.resultPreviewDownload.href = `/api/results/${encodeURIComponent(filename)}`;
+    if (!elements.resultPreviewDialog.open) elements.resultPreviewDialog.showModal();
+
+    try {
+        const response = await fetch(`/api/results/${encodeURIComponent(filename)}`);
+        if (!response.ok) {
+            const result = response.headers.get('content-type')?.includes('application/json')
+                ? await response.json()
+                : null;
+            throw new Error(result?.error || `Request failed (${response.status}).`);
+        }
+        const text = await response.text();
+        if (requestId !== previewRequestId || !elements.resultPreviewDialog.open) return;
+        previewText = text;
+        elements.resultPreviewSearch.disabled = false;
+        renderResultPreview();
+        elements.resultPreviewSearch.focus();
+    } catch (error) {
+        if (requestId !== previewRequestId || !elements.resultPreviewDialog.open) return;
+        elements.resultPreviewSearchStatus.textContent = 'The result preview could not be loaded.';
+        elements.resultPreviewContent.textContent = error.message;
+        showMessage(error.message, true);
+    }
+};
+
 const renderResults = () => {
     elements.results.replaceChildren();
     if (!results.length) {
@@ -288,6 +364,11 @@ const renderResults = () => {
         row.className = 'list-row';
         const name = document.createElement('span');
         name.textContent = filename;
+        const preview = document.createElement('button');
+        preview.className = 'text-button';
+        preview.type = 'button';
+        preview.textContent = 'Preview';
+        preview.addEventListener('click', () => openResultPreview(filename));
         const download = document.createElement('a');
         download.className = 'text-button';
         download.href = `/api/results/${encodeURIComponent(filename)}`;
@@ -299,11 +380,30 @@ const renderResults = () => {
         remove.addEventListener('click', () => deleteResult(filename));
         const actions = document.createElement('div');
         actions.className = 'row-actions';
-        actions.append(download, remove);
+        actions.append(preview, download, remove);
         row.append(name, actions);
         elements.results.append(row);
     }
 };
+
+elements.resultPreviewSearch.addEventListener('input', renderResultPreview);
+elements.resultPreviewDismiss.addEventListener('click', () => elements.resultPreviewDialog.close());
+elements.resultPreviewClose.addEventListener('click', () => elements.resultPreviewDialog.close());
+elements.resultPreviewDialog.addEventListener('close', () => { previewRequestId++; });
+
+elements.senderJob.addEventListener('click', async event => {
+    const button = event.target.closest('button[data-copy-pairing-code]');
+    if (!button) return;
+    try {
+        if (!navigator.clipboard?.writeText) {
+            throw new Error('Clipboard access is unavailable in this browser.');
+        }
+        await navigator.clipboard.writeText(button.dataset.copyPairingCode);
+        showMessage('Pairing code copied to clipboard.');
+    } catch (error) {
+        showMessage(`Could not copy pairing code: ${error.message}`, true);
+    }
+});
 
 const renderSummary = (scan) => {
     if (!scan) {
@@ -505,10 +605,18 @@ const displayStatus = (result) => {
             elements.senderJob.append(session);
         }
         if (sender.pairingCode) {
+            const pairingCodeRow = document.createElement('div');
+            pairingCodeRow.className = 'pairing-code-row';
             const code = document.createElement('strong');
             code.className = 'pairing-code';
             code.textContent = sender.pairingCode;
-            elements.senderJob.append(code);
+            const copyCode = document.createElement('button');
+            copyCode.className = 'button secondary pairing-copy-button';
+            copyCode.type = 'button';
+            copyCode.textContent = 'Copy code';
+            copyCode.dataset.copyPairingCode = sender.pairingCode;
+            pairingCodeRow.append(code, copyCode);
+            elements.senderJob.append(pairingCodeRow);
             const pairingInstructions = document.createElement('p');
             pairingInstructions.textContent = 'Enter this code in WhatsApp to link the sender.';
             elements.senderJob.append(pairingInstructions);
