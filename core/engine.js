@@ -57,7 +57,8 @@ const startEngine = async (returnToMenu, webOptions = null) => {
             console.log('=== starting scanner ===');
         }
 
-        const txtFileList = fs.readdirSync('.').filter(f => f.endsWith('.txt') && !f.includes('report_'));
+        const txtFileList = fs.readdirSync('.').filter(f => f.endsWith('.txt')
+            && !f.includes('report_') && !f.includes('result_'));
         if (interactive) console.log('\n[ target file list ]');
         
         if (txtFileList.length === 0) {

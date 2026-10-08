@@ -1,6 +1,6 @@
 # cekbio
 
-cekbio is a local Node.js CLI and web interface for managing sender sessions, scanning target lists, and saving the existing text/JSON reports.
+cekbio is a local Node.js CLI and web interface for managing sender sessions, scanning target lists, and saving text results and internal JSON data.
 
 ## Requirements
 
@@ -69,7 +69,7 @@ The web dashboard runs locally on the Android device. Root access, an emulator, 
 ### Android background behavior and data
 
 - Android may stop background processes to save battery. Keep Termux open and, if Android offers the setting, allow Termux unrestricted battery use while scanning. Battery settings and wake locks cannot guarantee that Android will never stop the process.
-- The script does not require `termux-setup-storage` or the Termux:API companion app. Keep sender sessions, targets, checkpoints, and reports in the app's private Termux directory.
+- The script does not require `termux-setup-storage` or the Termux:API companion app. Keep sender sessions, targets, checkpoints, and results in the app's private Termux directory.
 - The dashboard server binds only to `127.0.0.1`; it is intended to be accessed from the same device. Do not expose it through a network tunnel or port forwarding.
 - Stop scans/sender operations before closing Termux. Do not run the CLI and web interface against the same sender session at the same time.
 
@@ -151,17 +151,19 @@ From the project directory, run:
 node index.js
 ```
 
-The terminal menu remains available and uses the same sender, scan, checkpoint, and report logic.
+The terminal menu remains available and uses the same sender, scan, checkpoint, and result-saving logic.
 
 ## Web interface behavior and local data
 
-The web panel can add and check sender sessions, upload `.txt` target files (up to 10 MB), start and monitor scans, resume or discard an existing checkpoint, and download generated text reports. Internal JSON result files remain in the application directory for scan recovery and are not listed in the dashboard. Individual target lists and text reports can be removed after confirmation; removing a target list also removes its checkpoint, but does not remove its generated reports.
+The web panel can add and check sender sessions, upload `.txt` target files (up to 10 MB), start and monitor scans, resume or discard an existing checkpoint, and download generated text results. New text result files use the `result_` prefix, such as `result_business_targets.txt`. Categories with no findings are not shown in Results. Internal JSON result files remain in the application directory for scan recovery and are not listed in the dashboard. Individual target lists and text results can be removed after confirmation; removing a target list also removes its checkpoint, but does not remove its generated results.
 
-Uploaded targets, sender sessions, checkpoints, and generated data are stored in the application's working directory. Keep this directory private because it contains WhatsApp session credentials and target/report data.
+Uploaded targets, sender sessions, checkpoints, and generated data are stored in the application's working directory. Keep this directory private because it contains WhatsApp session credentials, target lists, and result data.
 
-During a scan, the dashboard shows the in-memory account summary, batch status, and the number of targets completed at batch boundaries. Use the Reports search and category filter to narrow the visible text reports; these controls do not change or delete report files.
+During a scan, the dashboard shows the in-memory account summary, batch status, and the number of targets completed at batch boundaries. Use the Results search and category filter to narrow the visible text results; these controls do not change or delete result files.
 
-The scanner's existing batch behavior, report format, and checkpoint format are retained. Pause and cancel controls are not provided. Use either the CLI or web interface at a time; do not open the same sender session in both processes simultaneously.
+Older `report_*.txt` files are left untouched but are no longer listed or managed from the Results tab. They are also excluded from target-file discovery so they cannot accidentally be scanned as input.
+
+The scanner's existing batch behavior, result content format, and checkpoint format are retained. Pause and cancel controls are not provided. Use either the CLI or web interface at a time; do not open the same sender session in both processes simultaneously.
 
 Use **Shut down** in the dashboard to stop the local Node.js application. It does not shut down the operating system. The application refuses to shut down while a scan or sender operation is active; wait for the operation to finish and try again.
 

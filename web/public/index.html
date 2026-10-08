@@ -50,12 +50,12 @@
             <span>Scan</span>
             <i id="nav-scan-activity" class="nav-activity" aria-hidden="true" hidden></i>
         </button>
-        <button id="nav-reports" class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-reports" tabindex="-1" data-view="reports">
+        <button id="nav-results" class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-results" tabindex="-1" data-view="results">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M6 3.5h8l4 4V20.5H6z"></path>
                 <path d="M14 3.5v4h4M9 12h6M9 15.5h6"></path>
             </svg>
-            <span>Reports</span>
+            <span>Results</span>
         </button>
     </nav>
 
@@ -163,29 +163,29 @@
             </article>
         </section>
 
-        <section id="view-reports" class="page-view" role="tabpanel" aria-labelledby="nav-reports" tabindex="0" hidden>
+        <section id="view-results" class="page-view" role="tabpanel" aria-labelledby="nav-results" tabindex="0" hidden>
             <div class="intro">
                 <p class="eyebrow">SCAN RESULTS</p>
-                <h1>Reports</h1>
-                <p>Search, filter, download, or remove generated text reports.</p>
+                <h1>Results</h1>
+                <p>Search, filter, download, or remove generated scan results.</p>
             </div>
-            <article class="card reports-card">
+            <article class="card results-card">
                 <div class="card-heading">
-                    <div><p class="eyebrow">RESULTS</p><h2>Generated reports</h2></div>
+                    <div><p class="eyebrow">RESULTS</p><h2>Generated results</h2></div>
                 </div>
-                <p class="hint">Search and filter generated reports. Internal scan data remains stored locally.</p>
-                <div class="report-filters">
-                    <label class="sr-only" for="report-search">Search reports</label>
-                    <input id="report-search" type="search" placeholder="Search reports..." autocomplete="off">
-                    <label class="sr-only" for="report-category">Filter reports by category</label>
-                    <select id="report-category">
+                <p class="hint">Search and filter generated results. Internal scan data remains stored locally.</p>
+                <div class="result-filters">
+                    <label class="sr-only" for="result-search">Search results</label>
+                    <input id="result-search" type="search" placeholder="Search results..." autocomplete="off">
+                    <label class="sr-only" for="result-category">Filter results by category</label>
+                    <select id="result-category">
                         <option value="all">All categories</option>
                         <option value="business">Business</option>
                         <option value="personal">Personal</option>
                         <option value="unregistered">Unregistered</option>
                     </select>
                 </div>
-                <div id="reports" class="list"></div>
+                <div id="results" class="list"></div>
             </article>
         </section>
         <footer>cekbio runs locally · WhatsApp sessions and files remain on this device</footer>

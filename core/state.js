@@ -39,7 +39,7 @@ const saveReport = () => {
         businessContent += `∟ 📵 No Desc       : ${state.statistics.noBioBusiness}\n\n`;
         businessContent += `──────── 📝 NUMBER DATA ────────\n`;
         businessContent += logBusinessSorted.length > 0 ? logBusinessSorted.join('\n\n') : `   (empty)\n`;
-        fs.writeFileSync(`report_business_${cleanName}.txt`, businessContent);
+        fs.writeFileSync(`result_business_${cleanName}.txt`, businessContent);
 
         // 2. Process Personal Data
         fs.writeFileSync(`target_personal_${cleanName}.json`, JSON.stringify(state.targetPersonal, null, 4));
@@ -64,7 +64,7 @@ const saveReport = () => {
         personalContent += `∟ 🔢 Total Accounts: ${state.targetPersonal.length}\n\n`;
         personalContent += `──────── 📝 NUMBER DATA ────────\n`;
         personalContent += mappedPersonalLog.length > 0 ? mappedPersonalLog.join('\n\n') : `   (empty)\n`;
-        fs.writeFileSync(`report_personal_${cleanName}.txt`, personalContent);
+        fs.writeFileSync(`result_personal_${cleanName}.txt`, personalContent);
 
         // 3. Process Unregistered Data
         fs.writeFileSync(`target_unregistered_${cleanName}.json`, JSON.stringify(state.targetUnregistered, null, 4));
@@ -75,7 +75,7 @@ const saveReport = () => {
         unregisteredContent += `∟ 🔢 Total Dead    : ${state.targetUnregistered.length}\n\n`;
         unregisteredContent += `────── 🚫 NOT REGISTERED ───────\n`;
         unregisteredContent += mappedUnregisteredLog.length > 0 ? mappedUnregisteredLog.join('\n') : `   (empty)\n`;
-        fs.writeFileSync(`report_unregistered_${cleanName}.txt`, unregisteredContent);
+        fs.writeFileSync(`result_unregistered_${cleanName}.txt`, unregisteredContent);
 
     } catch (e) {
         minimalLog('error', 'failed to execute absolute auto-save:\n' + e.stack);

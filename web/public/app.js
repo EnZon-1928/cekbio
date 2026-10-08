@@ -28,9 +28,9 @@ const elements = {
     progressDetail: $('#progress-detail'),
     stats: $('#stats'),
     logs: $('#logs'),
-    reports: $('#reports'),
-    reportSearch: $('#report-search'),
-    reportCategory: $('#report-category'),
+    results: $('#results'),
+    resultSearch: $('#result-search'),
+    resultCategory: $('#result-category'),
     summaryContext: $('#summary-context'),
     statBusiness: $('#stat-business'),
     statPersonal: $('#stat-personal'),
@@ -172,7 +172,7 @@ $('#clean-senders').addEventListener('click', async () => {
 let targets = [];
 let checkpoints = {};
 let senders = [];
-let reports = [];
+let results = [];
 
 const request = async (url, options) => {
     const response = await fetch(url, options);
@@ -259,49 +259,49 @@ const refreshSenders = async () => {
     }
 };
 
-const refreshReports = async () => {
-    const result = await request('/api/reports');
-    reports = result.reports;
-    renderReports();
+const refreshResults = async () => {
+    const result = await request('/api/results');
+    results = result.results;
+    renderResults();
 };
 
-const renderReports = () => {
-    elements.reports.replaceChildren();
-    if (!reports.length) {
-        elements.reports.textContent = 'No reports are available yet.';
+const renderResults = () => {
+    elements.results.replaceChildren();
+    if (!results.length) {
+        elements.results.textContent = 'No results with findings are available yet.';
         return;
     }
-    const searchTerm = elements.reportSearch.value.trim().toLowerCase();
-    const selectedCategory = elements.reportCategory.value;
-    const filteredReports = reports.filter(filename => {
+    const searchTerm = elements.resultSearch.value.trim().toLowerCase();
+    const selectedCategory = elements.resultCategory.value;
+    const filteredResults = results.filter(filename => {
         const matchesSearch = filename.toLowerCase().includes(searchTerm);
-        const category = filename.match(/^report_(business|personal|unregistered)_/)?.[1];
+        const category = filename.match(/^result_(business|personal|unregistered)_/)?.[1];
         const matchesCategory = selectedCategory === 'all' || category === selectedCategory;
         return matchesSearch && matchesCategory;
     });
-    if (!filteredReports.length) {
-        elements.reports.textContent = 'No reports match the selected filters.';
+    if (!filteredResults.length) {
+        elements.results.textContent = 'No results match the selected filters.';
         return;
     }
-    for (const filename of filteredReports) {
+    for (const filename of filteredResults) {
         const row = document.createElement('div');
         row.className = 'list-row';
         const name = document.createElement('span');
         name.textContent = filename;
         const download = document.createElement('a');
         download.className = 'text-button';
-        download.href = `/api/reports/${encodeURIComponent(filename)}`;
+        download.href = `/api/results/${encodeURIComponent(filename)}`;
         download.textContent = 'Download ↓';
         const remove = document.createElement('button');
         remove.className = 'text-button danger';
         remove.type = 'button';
         remove.textContent = 'Remove';
-        remove.addEventListener('click', () => deleteReport(filename));
+        remove.addEventListener('click', () => deleteResult(filename));
         const actions = document.createElement('div');
         actions.className = 'row-actions';
         actions.append(download, remove);
         row.append(name, actions);
-        elements.reports.append(row);
+        elements.results.append(row);
     }
 };
 
@@ -375,7 +375,7 @@ const deleteSender = async (folder) => {
 const deleteTarget = async (filename) => {
     if (!await confirmAction({
         title: 'Remove target list?',
-        message: `"${filename}" and its checkpoint will be permanently deleted. Generated reports will not be affected.`,
+        message: `"${filename}" and its checkpoint will be permanently deleted. Generated results will not be affected.`,
         confirmLabel: 'Remove target'
     })) return;
     try {
@@ -391,19 +391,19 @@ const deleteTarget = async (filename) => {
     }
 };
 
-const deleteReport = async (filename) => {
+const deleteResult = async (filename) => {
     if (!await confirmAction({
-        title: 'Remove result file?',
+        title: 'Remove result?',
         message: `"${filename}" will be permanently deleted. This action cannot be undone.`,
         confirmLabel: 'Remove file'
     })) return;
     try {
-        await request(`/api/reports/${encodeURIComponent(filename)}/delete`, {
+        await request(`/api/results/${encodeURIComponent(filename)}/delete`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ confirm: true })
         });
-        await refreshReports();
+        await refreshResults();
         showMessage(`"${filename}" was removed.`);
     } catch (error) {
         showMessage(error.message, true);
@@ -552,7 +552,7 @@ const displayStatus = (result) => {
         : 'Waiting for scan activity...';
     elements.startScan.disabled = ['starting', 'running'].includes(scan.status);
     if (scan.status === 'failed' && scan.error) showMessage(scan.error, true);
-    if (scan.status === 'completed') refreshReports().catch(error => showMessage(error.message, true));
+    if (scan.status === 'completed') refreshResults().catch(error => showMessage(error.message, true));
 };
 
 const pollStatus = async () => {
@@ -564,7 +564,7 @@ const pollStatus = async () => {
         } else if (result.scan && ['starting', 'running'].includes(result.scan.status)) {
             window.setTimeout(pollStatus, 2000);
         } else {
-            await Promise.all([refreshSenders(), refreshTargets(), refreshReports()]);
+            await Promise.all([refreshSenders(), refreshTargets(), refreshResults()]);
         }
     } catch (error) {
         showMessage(error.message, true);
@@ -572,10 +572,10 @@ const pollStatus = async () => {
 };
 
 elements.target.addEventListener('change', updateCheckpoint);
-elements.reportSearch.addEventListener('input', renderReports);
-elements.reportCategory.addEventListener('change', renderReports);
+elements.resultSearch.addEventListener('input', renderResults);
+elements.resultCategory.addEventListener('change', renderResults);
 $('#refresh').addEventListener('click', () => {
-    Promise.all([refreshTargets(), refreshSenders(), refreshReports(), pollStatus()])
+    Promise.all([refreshTargets(), refreshSenders(), refreshResults(), pollStatus()])
         .catch(error => showMessage(error.message, true));
 
     activateView('scan');
@@ -649,5 +649,5 @@ elements.scanForm.addEventListener('submit', async event => {
     }
 });
 
-Promise.all([refreshTargets(), refreshSenders(), refreshReports(), pollStatus()])
+Promise.all([refreshTargets(), refreshSenders(), refreshResults(), pollStatus()])
     .catch(error => showMessage(error.message, true));

@@ -9,7 +9,7 @@ const { subscribeLogs } = require('../utils/logger');
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const SESSION_PATTERN = /^session_[^/\\\u0000-\u001f]+$/;
-const REPORT_PATTERN = /^report_(business|personal|unregistered)_.*\.txt$/;
+const RESULT_PATTERN = /^result_(business|personal|unregistered)_(.+)\.txt$/;
 
 let scanJob = null;
 let senderJob = null;
@@ -53,12 +53,24 @@ const listSenders = () => fs.readdirSync(process.cwd(), { withFileTypes: true })
     });
 
 const listTargets = () => fs.readdirSync(process.cwd(), { withFileTypes: true })
-    .filter(entry => entry.isFile() && entry.name.endsWith('.txt') && !entry.name.includes('report_'))
+    .filter(entry => entry.isFile() && entry.name.endsWith('.txt')
+        && !entry.name.includes('report_') && !entry.name.includes('result_'))
     .map(entry => entry.name)
     .sort();
 
-const listDownloads = () => fs.readdirSync(process.cwd(), { withFileTypes: true })
-    .filter(entry => entry.isFile() && REPORT_PATTERN.test(entry.name))
+const hasResultData = filename => {
+    const match = filename.match(RESULT_PATTERN);
+    if (!match) return false;
+    const [, category, targetName] = match;
+    const dataPath = path.join(process.cwd(), `target_${category}_${targetName}.json`);
+    if (!fs.existsSync(dataPath)) return false;
+    const data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+    if (!Array.isArray(data)) throw new Error(`Internal result data is invalid for ${filename}.`);
+    return data.length > 0;
+};
+
+const listResults = () => fs.readdirSync(process.cwd(), { withFileTypes: true })
+    .filter(entry => entry.isFile() && RESULT_PATTERN.test(entry.name) && hasResultData(entry.name))
     .map(entry => entry.name)
     .sort();
 
@@ -171,14 +183,14 @@ const routeRequest = async (req, res, server) => {
         sendJson(res, 200, { targets, checkpoints });
         return;
     }
-    if (method === 'GET' && pathname === '/api/reports') {
-        sendJson(res, 200, { reports: listDownloads() });
+    if (method === 'GET' && pathname === '/api/results') {
+        sendJson(res, 200, { results: listResults() });
         return;
     }
-    if (method === 'GET' && pathname.startsWith('/api/reports/')) {
-        const filename = pathname.slice('/api/reports/'.length);
-        if (!REPORT_PATTERN.test(filename) || !listDownloads().includes(filename)) {
-            sendJson(res, 404, { error: 'Report not found.' });
+    if (method === 'GET' && pathname.startsWith('/api/results/')) {
+        const filename = pathname.slice('/api/results/'.length);
+        if (!RESULT_PATTERN.test(filename) || !listResults().includes(filename)) {
+            sendJson(res, 404, { error: 'Result not found.' });
             return;
         }
         res.writeHead(200, {
@@ -189,19 +201,19 @@ const routeRequest = async (req, res, server) => {
         fs.createReadStream(path.join(process.cwd(), filename)).pipe(res);
         return;
     }
-    if (method === 'POST' && pathname.startsWith('/api/reports/') && pathname.endsWith('/delete')) {
+    if (method === 'POST' && pathname.startsWith('/api/results/') && pathname.endsWith('/delete')) {
         if (scanJob?.status === 'starting' || scanJob?.status === 'running') {
-            sendJson(res, 409, { error: 'Reports cannot be removed while a scan is in progress.' });
+            sendJson(res, 409, { error: 'Results cannot be removed while a scan is in progress.' });
             return;
         }
-        const filename = pathname.slice('/api/reports/'.length, -'/delete'.length);
+        const filename = pathname.slice('/api/results/'.length, -'/delete'.length);
         const body = await readJsonBody(req);
         if (body.confirm !== true) {
-            sendJson(res, 400, { error: 'Explicit confirmation is required to remove a report.' });
+            sendJson(res, 400, { error: 'Explicit confirmation is required to remove a result.' });
             return;
         }
-        if (!REPORT_PATTERN.test(filename) || !listDownloads().includes(filename)) {
-            sendJson(res, 404, { error: 'Report not found.' });
+        if (!RESULT_PATTERN.test(filename) || !listResults().includes(filename)) {
+            sendJson(res, 404, { error: 'Result not found.' });
             return;
         }
         fs.unlinkSync(path.join(process.cwd(), filename));
@@ -219,8 +231,8 @@ const routeRequest = async (req, res, server) => {
         const filename = path.basename(body.name);
         if (filename !== body.name || filename.includes('/') || filename.includes('\\')
             || /[\u0000-\u001f\u007f]/.test(filename) || filename.length <= 4
-            || !filename.endsWith('.txt') || filename.includes('report_')) {
-            sendJson(res, 400, { error: 'Target filename must be a valid .txt filename and cannot contain report_.' });
+            || !filename.endsWith('.txt') || filename.includes('report_') || filename.includes('result_')) {
+            sendJson(res, 400, { error: 'Target filename must be a valid .txt filename and cannot contain report_ or result_.' });
             return;
         }
         const targetPath = path.join(process.cwd(), filename);
