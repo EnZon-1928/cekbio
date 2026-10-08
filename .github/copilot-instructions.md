@@ -29,3 +29,4 @@
 - Keep changes focused on the user's request and do not edit dashboard copy as a side effect.
 - Check the existing CLI and web behavior when changing shared code.
 - Run available syntax checks and focused smoke tests. The package currently does not define a real automated test suite.
+- When working in WSL/Linux, if the matching Windows working copy exists (currently `C:\Users\izhar\cekbio`), synchronize each changed project file to that copy as part of the task. Before copying, inspect differences and preserve any Windows-only edits; do not overwrite conflicting changes without resolving them. Copy only the relevant changed source/documentation files, never `node_modules`, sender sessions, credentials, target lists, or scan results. Verify the synchronized files match after copying.
