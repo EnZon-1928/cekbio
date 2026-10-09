@@ -5,7 +5,7 @@ const readline = require('readline');
 const fs = require('fs');
 
 const { state } = require('./state');
-const { runScanner } = require('./scanner');
+const { runScanner, runScannerPool } = require('./scanner');
 
 const loggerPino = pino({ level: 'silent' });
 const askQuestion = (rl) => (question) => new Promise(resolve => rl.question(question, resolve));
@@ -43,6 +43,118 @@ const resetState = (isResume = false, cleanName = '') => {
         };
     }
     state.batches = [];
+    state.multiSenderScan = false;
+    state.completedBatchIndices = [];
+    state.scanBatchSize = null;
+};
+
+const createScanWorker = async (sessionFolder, onWorkerStatus) => {
+    const { state: authState, saveCreds } = await useMultiFileAuthState(sessionFolder);
+    const { version } = await fetchLatestBaileysVersion();
+    const sock = makeWASocket({
+        version,
+        logger: loggerPino,
+        printQRInTerminal: false,
+        auth: authState,
+        browser: ['My Product', 'Chrome', '10.0'],
+        companionPlatformDisplay: 'Chrome (Windows)'
+    });
+    sock.ev.on('creds.update', saveCreds);
+
+    let opened = false;
+    let closed = false;
+    let connectionTimeout;
+    const failureWaiters = new Set();
+    let resolveOpen;
+    let rejectOpen;
+    const openPromise = new Promise((resolve, reject) => {
+        resolveOpen = resolve;
+        rejectOpen = reject;
+    });
+    const worker = {
+        folder: sessionFolder,
+        sock,
+        available: true,
+        watchFailure() {
+            let notify;
+            const promise = new Promise(resolve => { notify = resolve; });
+            if (closed) notify({ error: new Error(`Sender ${sessionFolder} is disconnected.`) });
+            else failureWaiters.add(notify);
+            return {
+                promise,
+                cancel: () => failureWaiters.delete(notify)
+            };
+        },
+        close(error = new Error(`Sender ${sessionFolder} is unavailable.`)) {
+            if (closed) return;
+            closed = true;
+            worker.available = false;
+            clearTimeout(connectionTimeout);
+            for (const notify of failureWaiters) notify({ error });
+            failureWaiters.clear();
+            try {
+                sock.ws.close();
+            } catch (closeError) {
+                console.error(`Could not close sender socket ${sessionFolder}:`, closeError.message);
+            } finally {
+                sock.ev.removeAllListeners();
+            }
+        }
+    };
+
+    connectionTimeout = setTimeout(() => {
+        const error = new Error(`Sender ${sessionFolder} did not connect in time.`);
+        onWorkerStatus(sessionFolder, 'inactive', error.message);
+        if (!opened) rejectOpen(error);
+        worker.close(error);
+    }, 30000);
+    connectionTimeout.unref?.();
+
+    sock.ev.on('connection.update', update => {
+        if (update.connection === 'open' && !opened) {
+            opened = true;
+            clearTimeout(connectionTimeout);
+            onWorkerStatus(sessionFolder, 'active');
+            resolveOpen(worker);
+        } else if (update.connection === 'close') {
+            if (closed) return;
+            const error = new Error(`Sender ${sessionFolder} disconnected.`);
+            onWorkerStatus(sessionFolder, 'inactive', error.message);
+            if (!opened) rejectOpen(error);
+            worker.close(error);
+        }
+    });
+
+    return openPromise;
+};
+
+const runMultiSenderScan = async (sessionFolders, onWorkerStatus) => {
+    const reportWorkerStatus = (...args) => {
+        try {
+            onWorkerStatus(...args);
+        } catch (error) {
+            console.error(`Could not update sender status for ${args[0]}:`, error.message);
+        }
+    };
+    const workerResults = await Promise.allSettled(sessionFolders.map(folder => {
+        reportWorkerStatus(folder, 'checking');
+        return createScanWorker(folder, reportWorkerStatus).catch(error => {
+            reportWorkerStatus(folder, 'inactive', error.message);
+            throw error;
+        });
+    }));
+    const workers = workerResults
+        .filter(result => result.status === 'fulfilled')
+        .map(result => result.value);
+
+    state.isEngineRunning = true;
+    try {
+        const result = await runScannerPool(workers, { onWorkerStatus: reportWorkerStatus });
+        return result;
+    } finally {
+        state.isEngineRunning = false;
+        for (const worker of workers) worker.close();
+    }
 };
 
 const startEngine = async (returnToMenu, webOptions = null) => {
@@ -99,10 +211,12 @@ const startEngine = async (returnToMenu, webOptions = null) => {
         const cleanName = targetFile.replace('.txt', '');
 
         let isResume = false;
+        let checkpointTracker = null;
         const checkpointFile = `checkpoint_${cleanName}.json`;
         if (fs.existsSync(checkpointFile)) {
             try {
                 const tracker = JSON.parse(fs.readFileSync(checkpointFile, 'utf-8'));
+                checkpointTracker = tracker;
                 if (interactive) {
                     console.log(`\n[!] scan checkpoint found for [${targetFile}]`);
                     console.log(`    (last scan: batch ${tracker.batchIndex}/${tracker.totalBatches})`);
@@ -133,7 +247,7 @@ const startEngine = async (returnToMenu, webOptions = null) => {
 
         resetState(isResume, cleanName);
         if (isResume) {
-            state.batchIndex = JSON.parse(fs.readFileSync(checkpointFile, 'utf-8')).batchIndex;
+            state.batchIndex = checkpointTracker.batchIndex;
         }
 
         const targetData = fs.readFileSync(targetFile, 'utf-8');
@@ -162,6 +276,45 @@ const startEngine = async (returnToMenu, webOptions = null) => {
         }
         for (let i = 0; i < numberList.length; i += batchLimit) {
             state.batches.push(numberList.slice(i, i + batchLimit));
+        }
+
+        const requestedSessionFolders = webOptions?.sessionFolders;
+        if (Array.isArray(requestedSessionFolders)) {
+            const uniqueFolders = [...new Set(requestedSessionFolders)];
+            if (uniqueFolders.length === 0) throw new Error('Select at least one sender session.');
+
+            const sessionList = fs.readdirSync('.').filter(f => f.startsWith('session_'));
+            if (uniqueFolders.some(folder => !sessionList.includes(folder))) {
+                throw new Error('One or more selected sender sessions were not found.');
+            }
+
+            if (isResume && checkpointTracker?.multiSender
+                && (checkpointTracker.targetFile !== targetFile
+                    || checkpointTracker.batchSize !== batchLimit
+                    || checkpointTracker.totalBatches !== state.batches.length)) {
+                throw new Error('Resume requires the same target file and batch size used by the saved scan.');
+            }
+
+            state.multiSenderScan = true;
+            state.scanBatchSize = batchLimit;
+            state.completedBatchIndices = isResume
+                ? Array.isArray(checkpointTracker?.completedBatchIndices)
+                    ? checkpointTracker.completedBatchIndices.filter(index =>
+                        Number.isSafeInteger(index) && index >= 0 && index < state.batches.length)
+                    : Array.from({ length: Math.min(state.batchIndex, state.batches.length) }, (_, index) => index)
+                : [];
+            state.batchIndex = 0;
+            closePrompt();
+            const result = await runMultiSenderScan(
+                uniqueFolders,
+                webOptions.onWorkerStatus || (() => {})
+            );
+            if (result.paused) {
+                webOptions.onPaused?.(result);
+            } else {
+                webOptions.onComplete?.(result);
+            }
+            return result;
         }
 
         const sessionList = fs.readdirSync('.').filter(f => f.startsWith('session_'));
@@ -199,6 +352,29 @@ const startEngine = async (returnToMenu, webOptions = null) => {
         }
 
         if (!sessionList.includes(sessionFolder)) throw new Error('Selected sender session was not found.');
+
+        if (isResume && checkpointTracker?.multiSender) {
+            if (checkpointTracker.targetFile !== targetFile
+                || checkpointTracker.batchSize !== batchLimit
+                || checkpointTracker.totalBatches !== state.batches.length) {
+                throw new Error('Resume requires the same target file and batch size used by the saved scan.');
+            }
+            state.multiSenderScan = true;
+            state.scanBatchSize = batchLimit;
+            state.completedBatchIndices = Array.isArray(checkpointTracker.completedBatchIndices)
+                ? checkpointTracker.completedBatchIndices.filter(index =>
+                    Number.isSafeInteger(index) && index >= 0 && index < state.batches.length)
+                : Array.from({ length: Math.min(state.batchIndex, state.batches.length) }, (_, index) => index);
+            state.batchIndex = 0;
+            closePrompt();
+            const result = await runMultiSenderScan(
+                [sessionFolder],
+                webOptions?.onWorkerStatus || (() => {})
+            );
+            if (result.paused) webOptions?.onPaused?.(result);
+            else webOptions?.onComplete?.(result);
+            return result;
+        }
 
         if (interactive) console.log(`\nconnecting sender [${sessionFolder}]...`);
         closePrompt();

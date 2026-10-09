@@ -17,6 +17,8 @@ const RESULT_PATTERN = /^result_(business|personal|unregistered)_(.+)\.txt$/;
 
 let scanJob = null;
 let senderJob = null;
+let senderHealthPromise = null;
+const senderHealth = new Map();
 
 const sendJson = (res, status, value) => {
     res.writeHead(status, {
@@ -143,6 +145,40 @@ const numbersFromWorkbook = (buffer) => {
 const operationIsRunning = () => scanJob?.status === 'starting' || scanJob?.status === 'running'
     || senderJob?.status === 'starting' || senderJob?.status === 'running';
 
+const getSenderHealth = ({ probe = true } = {}) => {
+    const senders = listSenders();
+    for (const folder of senderHealth.keys()) {
+        if (!senders.includes(folder)) senderHealth.delete(folder);
+    }
+
+    if (probe && !senderHealthPromise && !operationIsRunning() && !state.isEngineRunning) {
+        for (const folder of senders) {
+            senderHealth.set(folder, { status: 'checking', checkedAt: null });
+        }
+        senderHealthPromise = Promise.all(senders.map(async folder => {
+            try {
+                const result = await pingSender(folder);
+                senderHealth.set(folder, { status: result.status, checkedAt: Date.now() });
+            } catch (error) {
+                senderHealth.set(folder, { status: 'error', error: error.message, checkedAt: Date.now() });
+            }
+        })).finally(() => {
+            senderHealthPromise = null;
+        });
+        senderHealthPromise.catch(error => {
+            console.error('Automatic sender health check failed:', error.message);
+        });
+    }
+
+    return {
+        senders: senders.map(folder => ({
+            folder,
+            ...(senderHealth.get(folder) || { status: 'unknown', checkedAt: null })
+        })),
+        checking: Boolean(senderHealthPromise)
+    };
+};
+
 const logToJob = (entry) => {
     if (!scanJob || !['starting', 'running'].includes(scanJob.status)) return;
     scanJob.logs.push(entry);
@@ -216,11 +252,20 @@ const routeRequest = async (req, res, server) => {
                 status: scanStatus,
                 targetFile: scanJob.targetFile,
                 sessionFolder: scanJob.sessionFolder,
+                sessionFolders: scanJob.sessionFolders,
+                senderStatuses: scanJob.senderStatuses,
                 error: scanJob.error,
                 logs: scanJob.logs,
-                currentBatch,
+                currentBatch: scanJob.sessionFolders
+                    ? (scanStatus === 'completed' ? totalBatches : state.completedBatchIndices.length)
+                    : currentBatch,
                 totalBatches,
-                completedTargets,
+                completedTargets: scanJob.sessionFolders && scanStatus !== 'completed'
+                    ? state.completedBatchIndices.reduce(
+                        (total, index) => total + (state.batches[index]?.length || 0),
+                        0
+                    )
+                    : completedTargets,
                 totalTargets,
                 statistics: state.statistics
             } : null,
@@ -231,6 +276,14 @@ const routeRequest = async (req, res, server) => {
 
     if (method === 'GET' && pathname === '/api/senders') {
         sendJson(res, 200, { senders: listSenders() });
+        return;
+    }
+    if (method === 'GET' && pathname === '/api/senders/health') {
+        const refresh = url.searchParams.get('refresh') !== '0';
+        if (url.searchParams.get('wait') === '1' && senderHealthPromise) {
+            await senderHealthPromise;
+        }
+        sendJson(res, 200, getSenderHealth({ probe: refresh }));
         return;
     }
     if (method === 'GET' && pathname === '/api/targets') {
@@ -446,8 +499,11 @@ const routeRequest = async (req, res, server) => {
         const senders = listSenders();
         senderJob = { status: 'running', mode: 'check-all', results: [], pairingCode: null, error: null };
         (async () => {
+            await senderHealthPromise;
             for (const folder of senders) {
-                senderJob.results.push(await pingSender(folder));
+                const result = await pingSender(folder);
+                senderHealth.set(folder, { status: result.status, checkedAt: Date.now() });
+                senderJob.results.push(result);
             }
             senderJob.status = 'completed';
         })().catch(error => {
@@ -471,10 +527,19 @@ const routeRequest = async (req, res, server) => {
         const senders = listSenders();
         senderJob = { status: 'running', mode: 'clean', results: [], pairingCode: null, error: null };
         (async () => {
+            await senderHealthPromise;
             for (const folder of senders) {
                 const result = await pingSender(folder);
+                senderHealth.set(folder, { status: result.status, checkedAt: Date.now() });
                 if (result.status === 'banned/logged_out' || result.status === 'timeout/dead') {
-                    fs.rmSync(path.join(process.cwd(), folder), { recursive: true });
+                    try {
+                        fs.rmSync(path.join(process.cwd(), folder), { recursive: true });
+                    } catch (error) {
+                        senderJob.status = 'failed';
+                        senderJob.error = error.message;
+                        throw error;
+                    }
+                    senderHealth.delete(folder);
                     result.deleted = true;
                 }
                 senderJob.results.push(result);
@@ -500,7 +565,8 @@ const routeRequest = async (req, res, server) => {
             return;
         }
         senderJob = { status: 'running', sessionFolder: folder, pairingCode: null, error: null };
-        pingSender(folder).then(result => {
+        Promise.resolve(senderHealthPromise).then(() => pingSender(folder)).then(result => {
+            senderHealth.set(folder, { status: result.status, checkedAt: Date.now() });
             senderJob.status = result.status;
             senderJob.results = [result];
         }).catch(error => {
@@ -525,7 +591,27 @@ const routeRequest = async (req, res, server) => {
             sendJson(res, 409, { error: 'Cannot delete a sender while another operation is running.' });
             return;
         }
-        fs.rmSync(path.join(process.cwd(), folder), { recursive: true });
+        senderJob = { status: 'running', mode: 'delete', sessionFolder: folder, error: null };
+        await senderHealthPromise;
+        if (scanJob?.status === 'starting' || scanJob?.status === 'running') {
+            senderJob = null;
+            sendJson(res, 409, { error: 'Cannot delete a sender while a scan is running.' });
+            return;
+        }
+        if (!listSenders().includes(folder)) {
+            senderJob = null;
+            sendJson(res, 404, { error: 'Sender session not found.' });
+            return;
+        }
+        try {
+            fs.rmSync(path.join(process.cwd(), folder), { recursive: true });
+        } catch (error) {
+            senderJob.status = 'failed';
+            senderJob.error = error.message;
+            throw error;
+        }
+        senderHealth.delete(folder);
+        senderJob.status = 'completed';
         sendJson(res, 200, { deleted: folder });
         return;
     }
@@ -536,27 +622,48 @@ const routeRequest = async (req, res, server) => {
             return;
         }
         const body = await readJsonBody(req);
+        const availableSenders = listSenders();
+        const multiSender = Array.isArray(body.sessionFolders);
+        const sessionFolders = multiSender
+            ? [...new Set(body.sessionFolders)]
+            : [body.sessionFolder];
         if (typeof body.targetFile !== 'string' || !listTargets().includes(body.targetFile)
-            || typeof body.sessionFolder !== 'string' || !listSenders().includes(body.sessionFolder)
+            || sessionFolders.length === 0
+            || sessionFolders.some(folder => typeof folder !== 'string' || !availableSenders.includes(folder))
             || !Number.isSafeInteger(body.batchSize) || body.batchSize < 1
             || typeof body.resume !== 'boolean') {
-            sendJson(res, 400, { error: 'Select a target and sender, enter a positive batch size, and choose checkpoint behavior.' });
+            sendJson(res, 400, { error: 'Select a target and sender session, enter a positive batch size, and choose checkpoint behavior.' });
             return;
         }
+        const pendingHealthCheck = senderHealthPromise;
         scanJob = {
             status: 'starting',
             targetFile: body.targetFile,
-            sessionFolder: body.sessionFolder,
+            sessionFolder: multiSender ? null : body.sessionFolder,
+            sessionFolders: multiSender ? sessionFolders : null,
+            senderStatuses: multiSender
+                ? Object.fromEntries(sessionFolders.map(folder => [folder, { status: 'checking' }]))
+                : null,
             error: null,
             logs: []
         };
-        startEngine(null, {
+        Promise.resolve(pendingHealthCheck).then(() => startEngine(null, {
             targetFile: body.targetFile,
-            sessionFolder: body.sessionFolder,
+            ...(multiSender
+                ? {
+                    sessionFolders,
+                    onWorkerStatus: (folder, status, error) => {
+                        const senderStatus = { status };
+                        if (error) senderStatus.error = error;
+                        scanJob.senderStatuses[folder] = senderStatus;
+                        senderHealth.set(folder, { ...senderStatus, checkedAt: Date.now() });
+                    }
+                }
+                : { sessionFolder: body.sessionFolder }),
             batchSize: body.batchSize,
             resume: body.resume
-        }).then(() => {
-            scanJob.status = 'completed';
+        })).then(result => {
+            scanJob.status = result?.status || 'completed';
         }).catch(error => {
             scanJob.status = 'failed';
             scanJob.error = error.message;
@@ -575,6 +682,15 @@ const routeRequest = async (req, res, server) => {
             sendJson(res, 409, { error: 'The application cannot shut down while a scan or sender operation is in progress.' });
             return;
         }
+        senderJob = { status: 'running', mode: 'shutdown', error: null };
+        try {
+            await senderHealthPromise;
+        } catch (error) {
+            senderJob.status = 'failed';
+            senderJob.error = error.message;
+            throw error;
+        }
+        senderJob.status = 'completed';
         res.writeHead(202, {
             'content-type': 'application/json; charset=utf-8',
             'cache-control': 'no-store',

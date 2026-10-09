@@ -30,6 +30,15 @@ const getTargetDisplayName = filename => filename
 const formatTargetButtonLabel = (filename, isActive) =>
     `${isActive ? '✅' : '◯'} ${getTargetDisplayName(filename)}`;
 
+const formatSenderButtonLabel = (folder, status) => {
+    const indicator = ['alive', 'active', 'scanning'].includes(status)
+        ? '🟢'
+        : status === 'checking'
+            ? '🟡'
+            : '⚪';
+    return `${indicator} ${folder}`;
+};
+
 const createActiveTargetSelection = () => {
     let activeTarget = null;
     return {
@@ -190,6 +199,9 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     const pendingSenderNumbers = new Map();
     const pairingRefreshTimers = new Map();
     const pairingRefreshErrors = new Set();
+    const senderViewRefreshes = new Map();
+    const senderViewTokens = new Map();
+    const senderHealthErrors = new Set();
 
     const registerAction = (payload) => {
         return actions.create(payload);
@@ -197,6 +209,31 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
 
     const actionButton = (keyboard, label, payload) => {
         keyboard.text([...String(label)].slice(0, 60).join(''), registerAction(payload));
+        return keyboard;
+    };
+
+    const clearSenderViewRefresh = chatId => {
+        const refresh = senderViewRefreshes.get(chatId);
+        if (refresh) clearTimeout(refresh.timer);
+        senderViewRefreshes.delete(chatId);
+        senderViewTokens.delete(chatId);
+    };
+
+    const createSenderListKeyboard = (senders, statuses, page) => {
+        const keyboard = new InlineKeyboard();
+        actionButton(keyboard, '➕ Add sender', { type: 'add-sender' }).row();
+        for (const folder of senders) {
+            const status = statuses.get(folder)?.status;
+            actionButton(keyboard, formatSenderButtonLabel(folder, status), {
+                type: 'refresh-senders',
+                page
+            }).row();
+            actionButton(keyboard, 'Remove', {
+                type: 'confirm',
+                action: { type: 'delete-sender', folder },
+                returnTo: { type: 'show-senders', page }
+            }).row();
+        }
         return keyboard;
     };
 
@@ -230,6 +267,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     };
 
     const showMainMenu = async (ctx, message = 'What would you like to do?', page = 0) => {
+        clearSenderViewRefresh(ctx.chat?.id);
         if (ctx.chat?.id) clearPairingRefresh(ctx.chat.id);
         const { targets } = await api('/api/targets');
         const activeTarget = activeTargetSelection.reconcile(targets);
@@ -244,8 +282,23 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
         if (message) lines.push(message);
         if (scan) {
             lines.push(`Target: ${scan.targetFile}`);
-            lines.push(`Sender: ${scan.sessionFolder}`);
+            if (scan.sessionFolders?.length) {
+                lines.push(`Sender sessions: ${scan.sessionFolders.length}`);
+            } else if (scan.sessionFolder) {
+                lines.push(`Sender: ${scan.sessionFolder}`);
+            }
             lines.push(`Progress: ${scan.completedTargets} / ${scan.totalTargets} targets`);
+            if (scan.senderStatuses) {
+                const activeCount = Object.values(scan.senderStatuses)
+                    .filter(sender => ['active', 'scanning'].includes(sender.status)).length;
+                lines.push(`Active scan senders: ${activeCount} / ${scan.sessionFolders.length}`);
+                const unavailableSenders = Object.entries(scan.senderStatuses)
+                    .filter(([, sender]) => sender.status === 'inactive')
+                    .map(([folder]) => folder);
+                if (unavailableSenders.length) {
+                    lines.push(`Unavailable: ${unavailableSenders.slice(0, 5).join(', ')}`);
+                }
+            }
         }
         lines.push(`Sender operation: ${sender?.status || 'idle'}`);
         if (sender?.sessionFolder) lines.push(`Session: ${sender.sessionFolder}`);
@@ -307,6 +360,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     };
 
     const showStatus = async (ctx, message) => {
+        clearSenderViewRefresh(ctx.chat?.id);
         const { scan, sender } = await api('/api/status');
         const presentation = createStatusPresentation(scan, sender, message);
         const result = await present(ctx, presentation.text, presentation.keyboard);
@@ -324,60 +378,41 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     };
 
     const showCollection = async (ctx, kind, requestedPage = 0, message) => {
+        clearSenderViewRefresh(ctx.chat?.id);
         const config = {
             senders: { endpoint: '/api/senders', key: 'senders', heading: '👤 Sender sessions' },
             targets: { endpoint: '/api/targets', key: 'targets', heading: 'Targets' },
-            results: { endpoint: '/api/results', key: 'results', heading: '📦 Scan results' },
-            scan: { endpoint: '/api/targets', key: 'targets', heading: '🔎 Choose a target to scan' }
+            results: { endpoint: '/api/results', key: 'results', heading: '📦 Scan results' }
         }[kind];
         if (!config) throw new Error('This list is not available.');
-        const response = await api(config.endpoint);
+        const [response, senderHealth] = await Promise.all([
+            api(config.endpoint),
+            kind === 'senders' ? api('/api/senders/health?refresh=0') : Promise.resolve(null)
+        ]);
         const allItems = response[config.key];
         const items = kind === 'results' ? allItems.filter(isResultFilename) : allItems;
-        const activeTarget = kind === 'targets' || kind === 'scan'
+        const activeTarget = kind === 'targets'
             ? activeTargetSelection.reconcile(response.targets)
             : null;
         const { page, pageCount, items: visibleItems } = paginateItems(items, requestedPage);
         const keyboard = new InlineKeyboard();
 
         if (kind === 'senders') {
-            actionButton(keyboard, '➕ Add sender', { type: 'add-sender' }).row();
+            const statuses = new Map(senderHealth.senders.map(item => [item.folder, item]));
+            keyboard.inline_keyboard.push(...createSenderListKeyboard(visibleItems, statuses, page).inline_keyboard);
         } else if (kind === 'targets') {
             actionButton(keyboard, '⬆️ Upload Targets', { type: 'upload-targets', page }).row();
-        } else if (kind === 'scan' && activeTarget) {
-            actionButton(
-                keyboard,
-                `▶️ Scan active: ${getTargetDisplayName(activeTarget)}`,
-                { type: 'scan-target', target: activeTarget, page: 0 }
-            ).row();
         }
         visibleItems.forEach(item => {
             if (kind === 'senders') {
-                actionButton(keyboard, item, { type: 'sender-details', folder: item, page });
+                return;
             } else if (kind === 'targets') {
-                actionButton(
-                    keyboard,
-                    formatTargetButtonLabel(item, item === activeTarget),
-                    { type: 'select-target', filename: item, page }
-                );
+                actionButton(keyboard, item, { type: 'target-details', filename: item, page });
             } else if (kind === 'results') {
                 actionButton(keyboard, item, { type: 'result-details', filename: item, page });
-            } else {
-                actionButton(
-                    keyboard,
-                    formatTargetButtonLabel(item, item === activeTarget),
-                    { type: 'scan-target', target: item, page }
-                );
             }
             keyboard.row();
-            if (kind === 'senders') {
-                actionButton(keyboard, 'Check', { type: 'check-sender', folder: item, page });
-                actionButton(keyboard, 'Remove', {
-                    type: 'confirm',
-                    action: { type: 'delete-sender', folder: item },
-                    returnTo: { type: 'show-senders', page }
-                }).row();
-            } else if (kind === 'targets') {
+            if (kind === 'targets') {
                 actionButton(keyboard, 'Remove', {
                     type: 'confirm',
                     action: { type: 'delete-target', filename: item },
@@ -393,14 +428,6 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             }
         });
 
-        if (kind === 'senders' && items.length) {
-            actionButton(keyboard, 'Check all', { type: 'check-all' }).row();
-            actionButton(keyboard, 'Clean inactive', {
-                type: 'confirm',
-                action: { type: 'clean-senders' },
-                returnTo: { type: 'show-senders', page }
-            }).row();
-        }
         if (pageCount > 1) {
             if (page > 0) actionButton(keyboard, '⬅️ Previous', { type: `show-${kind}`, page: page - 1 });
             if (page + 1 < pageCount) actionButton(keyboard, 'Next ➡️', { type: `show-${kind}`, page: page + 1 });
@@ -410,31 +437,82 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
 
         const emptyMessage = kind === 'results'
             ? 'No results with findings are available yet.'
-            : kind === 'scan'
-                ? 'No target lists found. Send a .txt or .xlsx document to this chat to add one.'
-                : kind === 'targets'
+            : kind === 'targets'
                     ? 'Send a .txt or .xlsx document to this chat using Upload Targets.'
                     : 'No sender sessions found. Add a sender from the Senders menu.';
-        const text = kind === 'targets'
-            ? `${config.heading}\n\n${message ? `${message}\n` : ''}${items.length ? 'Choose one target to make it active.' : emptyMessage}${pageCount > 1 ? `\nPage ${page + 1} of ${pageCount}` : ''}`
+        const text = kind === 'senders'
+            ? `${config.heading}\n\n${items.length ? '🟢 Active · 🟡 Checking · ⚪ Inactive' : emptyMessage}${pageCount > 1 ? `\nPage ${page + 1} of ${pageCount}` : ''}`
+            : kind === 'targets'
+            ? `${config.heading}\n\n${message ? `${message}\n` : ''}${items.length ? 'Choose a target to manage it. Select the active target from the main menu.' : emptyMessage}${pageCount > 1 ? `\nPage ${page + 1} of ${pageCount}` : ''}`
             : items.length
                 ? `${config.heading} · page ${page + 1} of ${pageCount}`
                 : `${config.heading}\n\n${emptyMessage}`;
-        return present(ctx, text, keyboard);
+        const result = await present(ctx, text, keyboard);
+        if (kind === 'senders' && senderHealth.checking) {
+            const messageId = ctx.callbackQuery?.message?.message_id || result?.message_id;
+            if (messageId) scheduleSenderViewRefresh(ctx.chat.id, messageId, page);
+        }
+        return result;
+    };
+
+    const scheduleSenderViewRefresh = (chatId, messageId, page, token = crypto.randomBytes(6).toString('hex')) => {
+        clearTimeout(senderViewRefreshes.get(chatId)?.timer);
+        senderViewTokens.set(chatId, token);
+        const errorKey = String(chatId);
+        const refresh = { timer: null };
+        refresh.timer = setTimeout(async () => {
+            if (senderViewTokens.get(chatId) !== token) return;
+            try {
+                const [response, health] = await Promise.all([
+                    api('/api/senders'),
+                    api('/api/senders/health?refresh=0&wait=1')
+                ]);
+                if (senderViewTokens.get(chatId) !== token) return;
+
+                const { page: currentPage, pageCount, items } = paginateItems(response.senders, page);
+                const statuses = new Map(health.senders.map(item => [item.folder, item]));
+                const keyboard = createSenderListKeyboard(items, statuses, currentPage);
+                if (pageCount > 1) {
+                    if (currentPage > 0) actionButton(keyboard, '⬅️ Previous', {
+                        type: 'show-senders',
+                        page: currentPage - 1
+                    });
+                    if (currentPage + 1 < pageCount) actionButton(keyboard, 'Next ➡️', {
+                        type: 'show-senders',
+                        page: currentPage + 1
+                    });
+                    keyboard.row();
+                }
+                addMenuButton(keyboard).row();
+                await bot.api.editMessageText(
+                    chatId,
+                    messageId,
+                    items.length
+                        ? `👤 Sender sessions · page ${currentPage + 1} of ${pageCount}`
+                        : '👤 Sender sessions\n\nNo sender sessions found. Add a sender from the Senders menu.',
+                    { reply_markup: keyboard }
+                );
+                senderViewRefreshes.delete(chatId);
+                senderViewTokens.delete(chatId);
+                senderHealthErrors.delete(errorKey);
+            } catch (error) {
+                if (senderViewTokens.get(chatId) !== token) return;
+                if (!senderHealthErrors.has(errorKey)) {
+                    senderHealthErrors.add(errorKey);
+                    console.error('Telegram sender status refresh failed:', error.message);
+                }
+                senderViewRefreshes.delete(chatId);
+                senderViewTokens.delete(chatId);
+            }
+        }, 750);
+        refresh.timer.unref?.();
+        senderViewRefreshes.set(chatId, refresh);
     };
 
     const showItemDetails = async (ctx, kind, item, page) => {
         const keyboard = new InlineKeyboard();
         let text;
-        if (kind === 'sender') {
-            text = `Sender session\n${item}`;
-            actionButton(keyboard, 'Check status', { type: 'check-sender', folder: item, page });
-            actionButton(keyboard, 'Remove sender', {
-                type: 'confirm',
-                action: { type: 'delete-sender', folder: item },
-                returnTo: { type: 'show-senders', page }
-            }).row();
-        } else if (kind === 'target') {
+        if (kind === 'target') {
             text = `Target list\n${item}`;
             actionButton(keyboard, 'Remove target', {
                 type: 'confirm',
@@ -450,9 +528,30 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
                 returnTo: { type: 'show-results', page }
             }).row();
         }
-        actionButton(keyboard, '⬅️ Back to list', { type: `show-${kind === 'sender' ? 'senders' : kind === 'target' ? 'targets' : 'results'}`, page });
+        actionButton(keyboard, '⬅️ Back to list', { type: `show-${kind === 'target' ? 'targets' : 'results'}`, page });
         addMenuButton(keyboard).row();
         return present(ctx, text, keyboard);
+    };
+
+    const beginScanForActiveTarget = async ctx => {
+        const [{ targets, checkpoints }, { senders }] = await Promise.all([
+            api('/api/targets'),
+            api('/api/senders')
+        ]);
+        const target = activeTargetSelection.reconcile(targets);
+        if (!target) {
+            await showMainMenu(ctx, 'Select a target from the main menu before starting a scan.');
+            return;
+        }
+        if (!senders.length) {
+            await showMainMenu(ctx, 'No sender sessions are available. Add a sender first.');
+            return;
+        }
+        await showScanBatchOptions(ctx, {
+            target,
+            checkpoint: checkpoints[target],
+            hasCheckpoint: Boolean(checkpoints[target])
+        });
     };
 
     const showScanBatchOptions = async (ctx, selection) => {
@@ -461,11 +560,9 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             actionButton(keyboard, String(size), {
                 type: 'scan-size',
                 target: selection.target,
-                sender: selection.sender,
                 checkpoint: selection.checkpoint,
                 hasCheckpoint: selection.hasCheckpoint,
                 targetPage: selection.targetPage,
-                senderPage: selection.senderPage,
                 batchSize: size
             });
         }
@@ -473,14 +570,8 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             type: 'scan-custom-size',
             selection
         }).row();
-        actionButton(keyboard, '⬅️ Back to senders', {
-            type: 'scan-target',
-            target: selection.target,
-            page: selection.targetPage || 0,
-            senderPage: selection.senderPage || 0
-        });
-        actionButton(keyboard, 'Cancel', { type: 'main-menu' }).row();
-        return present(ctx, 'Choose the number of targets per batch:', keyboard);
+        actionButton(keyboard, '⬅️ Back to menu', { type: 'main-menu' }).row();
+        return present(ctx, `Choose the number of targets per batch for ${selection.target}:`, keyboard);
     };
 
     const startSenderPairing = async (ctx, phoneNumber) => {
@@ -508,15 +599,17 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     };
 
     const startScan = async (ctx, selection, resume) => {
+        const { senders } = await api('/api/senders');
+        if (!senders.length) throw new Error('No sender sessions are available. Add a sender first.');
         await api('/api/scan', jsonPost({
             targetFile: selection.target,
-            sessionFolder: selection.sender,
+            sessionFolders: senders,
             batchSize: selection.batchSize,
             resume
         }));
         await showMainMenu(
             ctx,
-            `Scan started for ${selection.target} using ${selection.sender} (${selection.batchSize} targets per batch).`
+            `Scan started for ${selection.target} using all active senders (${selection.batchSize} targets per batch).`
         );
     };
 
@@ -535,7 +628,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             actionButton(keyboard, 'Cancel', { type: 'main-menu' });
             return present(
                 ctx,
-                `Ready to scan ${selection.target} with ${selection.sender} (${selection.batchSize} targets per batch).`,
+                `Ready to scan ${selection.target} with all active senders (${selection.batchSize} targets per batch).`,
                 keyboard
             );
         }
@@ -556,7 +649,8 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             ctx,
             selection.checkpoint?.invalid
                 ? 'The checkpoint is invalid. Start a new scan from the beginning?'
-                : `A checkpoint exists at batch ${selection.checkpoint.batchIndex} of ${selection.checkpoint.totalBatches}. Resume or start over?`,
+                : `A checkpoint exists with ${selection.checkpoint.completedBatchIndices?.length
+                    ?? selection.checkpoint.batchIndex} of ${selection.checkpoint.totalBatches} batches completed. Resume or start over?`,
             keyboard
         );
     };
@@ -575,17 +669,12 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     };
 
     const performAction = async (ctx, action) => {
-        const folderPath = folder => `/api/senders/${encodeURIComponent(folder)}`;
         const targetPath = filename => `/api/targets/${encodeURIComponent(filename)}`;
         const resultPath = filename => `/api/results/${encodeURIComponent(filename)}`;
 
         switch (action.type) {
-            case 'check-sender':
-                await api(`${folderPath(action.folder)}/check`, { method: 'POST' });
-                await showMainMenu(ctx, `Status check started for ${action.folder}.`);
-                return;
             case 'delete-sender':
-                await api(`${folderPath(action.folder)}/delete`, jsonPost({ confirm: true }));
+                await api(`/api/senders/${encodeURIComponent(action.folder)}/delete`, jsonPost({ confirm: true }));
                 if (!action.suppressMenu) await showMainMenu(ctx, `Sender ${action.folder} was removed.`);
                 return;
             case 'delete-target':
@@ -596,14 +685,6 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             case 'delete-result':
                 await api(`${resultPath(action.filename)}/delete`, jsonPost({ confirm: true }));
                 if (!action.suppressMenu) await showMainMenu(ctx, `Result ${action.filename} was removed.`);
-                return;
-            case 'check-all':
-                await api('/api/senders/check-all', { method: 'POST' });
-                await showMainMenu(ctx, 'Sender checks started. Open Status to see progress.');
-                return;
-            case 'clean-senders':
-                await api('/api/senders/clean', jsonPost({ confirm: true }));
-                if (!action.suppressMenu) await showMainMenu(ctx, 'Sender cleanup started. Open Status to see progress.');
                 return;
             case 'send-result':
                 await sendResults(ctx, action.filename);
@@ -620,6 +701,9 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             case 'show-senders':
                 await showCollection(ctx, 'senders', action.page);
                 return;
+            case 'refresh-senders':
+                await showCollection(ctx, 'senders', action.page);
+                return;
             case 'show-targets':
                 await showCollection(ctx, 'targets', action.page);
                 return;
@@ -627,7 +711,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
                 await showCollection(ctx, 'results', action.page);
                 return;
             case 'show-scan':
-                await showCollection(ctx, 'scan', action.page);
+                await beginScanForActiveTarget(ctx);
                 return;
             case 'main-menu-page':
                 await showMainMenu(ctx, 'What would you like to do?', action.page);
@@ -672,9 +756,6 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
                 }
                 return;
             }
-            case 'sender-details':
-                await showItemDetails(ctx, 'sender', action.folder, action.page);
-                return;
             case 'target-details':
                 await showItemDetails(ctx, 'target', action.filename, action.page);
                 return;
@@ -685,61 +766,6 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
                 pendingBatchSizes.delete(String(ctx.from.id));
                 await showScanBatchOptions(ctx, action.selection);
                 return;
-            case 'scan-target': {
-                const [senders, targetData] = await Promise.all([
-                    api('/api/senders'),
-                    api('/api/targets')
-                ]);
-                activeTargetSelection.select(action.target, targetData.targets);
-                if (!senders.senders.length) {
-                    await showMainMenu(ctx, 'No sender sessions are available. Add a sender first from Senders.');
-                    return;
-                }
-                const checkpoint = targetData.checkpoints[action.target];
-                const { page, pageCount, items: visibleSenders } = paginateItems(senders.senders, action.senderPage || 0);
-                const keyboard = new InlineKeyboard();
-                for (const sender of visibleSenders) {
-                    actionButton(keyboard, sender, {
-                        type: 'scan-sender',
-                        target: action.target,
-                        sender,
-                        checkpoint,
-                        hasCheckpoint: Boolean(checkpoint),
-                        targetPage: action.page || 0,
-                        senderPage: page
-                    }).row();
-                }
-                if (page > 0) {
-                    actionButton(keyboard, '⬅️ Previous', {
-                        type: 'scan-target',
-                        target: action.target,
-                        page: action.page || 0,
-                        senderPage: page - 1
-                    });
-                }
-                if (page + 1 < pageCount) {
-                    actionButton(keyboard, 'Next ➡️', {
-                        type: 'scan-target',
-                        target: action.target,
-                        page: action.page || 0,
-                        senderPage: page + 1
-                    });
-                }
-                if (pageCount > 1) {
-                    keyboard.row();
-                }
-                actionButton(keyboard, '⬅️ Back to targets', {
-                    type: 'show-scan',
-                    page: action.page || 0
-                });
-                actionButton(keyboard, 'Cancel', { type: 'main-menu' }).row();
-                await present(ctx, `Choose a sender for ${action.target}:`, keyboard);
-                return;
-            }
-            case 'scan-sender': {
-                await showScanBatchOptions(ctx, action);
-                return;
-            }
             case 'scan-custom-size':
                 pendingBatchSizes.set(String(ctx.from.id), {
                     ...action.selection,
@@ -759,7 +785,6 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
                 pendingBatchSizes.delete(String(ctx.from.id));
                 await requestCheckpointChoice(ctx, {
                     target: action.target,
-                    sender: action.sender,
                     checkpoint: action.checkpoint,
                     hasCheckpoint: action.hasCheckpoint,
                     targetPage: action.targetPage,
@@ -797,6 +822,16 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             if (ctx.callbackQuery) await ctx.answerCallbackQuery();
             return;
         }
+        try {
+            await api('/api/senders/health');
+            senderHealthErrors.delete(String(ctx.chat?.id));
+        } catch (error) {
+            const chatId = String(ctx.chat?.id);
+            if (!senderHealthErrors.has(chatId)) {
+                senderHealthErrors.add(chatId);
+                console.error('Automatic sender health check failed:', error.message);
+            }
+        }
         await next();
     });
 
@@ -808,6 +843,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             return;
         }
         if (action.type !== 'show-status') clearPairingRefresh(ctx.chat.id);
+        if (!['show-senders', 'refresh-senders'].includes(action.type)) clearSenderViewRefresh(ctx.chat.id);
         try {
             await performAction(ctx, action);
         } catch (error) {
@@ -824,7 +860,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     bot.command('senders', ctx => showCollection(ctx, 'senders'));
     bot.command('targets', ctx => showCollection(ctx, 'targets'));
     bot.command('results', ctx => showCollection(ctx, 'results'));
-    bot.command('scan', ctx => showCollection(ctx, 'scan'));
+    bot.command('scan', ctx => beginScanForActiveTarget(ctx));
 
     bot.command('addsender', async ctx => {
         const phoneNumber = String(ctx.match || '').trim();
@@ -833,17 +869,6 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             return;
         }
         await startSenderPairing(ctx, phoneNumber);
-    });
-
-    bot.command('checkall', async ctx => {
-        await api('/api/senders/check-all', { method: 'POST' });
-        await showMainMenu(ctx, 'Sender checks started. Open Status to see progress.');
-    });
-
-    bot.command('clean', async ctx => {
-        await askConfirmation(ctx, 'Check all senders and remove sessions that are inactive or logged out?', {
-            type: 'clean-senders'
-        }, { type: 'show-senders', page: 0 });
     });
 
     bot.command('shutdown', async ctx => {
@@ -945,8 +970,6 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
         { command: 'results', description: 'Send or remove generated results' },
         { command: 'scan', description: 'Start a scan' },
         { command: 'addsender', description: 'Add a sender session' },
-        { command: 'checkall', description: 'Check all sender sessions' },
-        { command: 'clean', description: 'Remove inactive senders' },
         { command: 'shutdown', description: 'Stop the local application' }
     ]);
 
@@ -964,6 +987,9 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             }
             pairingRefreshTimers.clear();
             pairingRefreshErrors.clear();
+            for (const refresh of senderViewRefreshes.values()) clearTimeout(refresh.timer);
+            senderViewRefreshes.clear();
+            senderViewTokens.clear();
             return bot.stop();
         },
         polling
@@ -975,6 +1001,7 @@ module.exports = {
     buildMainMenuKeyboard,
     createActionRegistry,
     createActiveTargetSelection,
+    formatSenderButtonLabel,
     formatTargetButtonLabel,
     formatMainMenuText,
     getTargetDisplayName,

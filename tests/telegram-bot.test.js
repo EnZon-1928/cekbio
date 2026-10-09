@@ -7,6 +7,7 @@ const {
     buildMainMenuKeyboard,
     createActionRegistry,
     createActiveTargetSelection,
+    formatSenderButtonLabel,
     formatTargetButtonLabel,
     formatMainMenuText,
     getTargetDisplayName,
@@ -109,6 +110,13 @@ test('target buttons show friendly names and a single active target can be repla
     assert.equal(selection.get(), secondTarget);
     assert.equal(selection.reconcile([firstTarget]), null);
     assert.throws(() => selection.select(secondTarget, [firstTarget]), /not found/);
+});
+
+test('sender labels show connected, checking, and unavailable states clearly', () => {
+    assert.equal(formatSenderButtonLabel('session_1', 'alive'), '🟢 session_1');
+    assert.equal(formatSenderButtonLabel('session_2', 'scanning'), '🟢 session_2');
+    assert.equal(formatSenderButtonLabel('session_3', 'checking'), '🟡 session_3');
+    assert.equal(formatSenderButtonLabel('session_4', 'timeout/dead'), '⚪ session_4');
 });
 
 test('start menu shows Targets heading, upload action, and one full-width button per target', () => {

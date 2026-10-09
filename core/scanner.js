@@ -1,9 +1,188 @@
 // file: core/scanner.js
 const fs = require('fs');
-const { state, saveReport } = require('./state');
+const { AsyncLocalStorage } = require('async_hooks');
+const { state: sharedState, saveReport } = require('./state');
 const { delay, withTimeout } = require('../utils/helpers');
 const { minimalLog } = require('../utils/logger');
 
+const scanStateStorage = new AsyncLocalStorage();
+const createEmptyStatistics = () => ({
+    registered: 0,
+    unregistered: 0,
+    bioBusiness: 0,
+    noBioBusiness: 0,
+    personal: 0
+});
+
+const commitBatchState = batchState => {
+    sharedState.targetBusiness.push(...batchState.targetBusiness);
+    sharedState.targetPersonal.push(...batchState.targetPersonal);
+    sharedState.targetUnregistered.push(...batchState.targetUnregistered);
+    for (const [key, value] of Object.entries(batchState.statistics)) {
+        sharedState.statistics[key] = (sharedState.statistics[key] || 0) + value;
+    }
+};
+
+const createInputOrderSorter = batches => {
+    const positions = new Map();
+    let index = 0;
+    for (const batch of batches) {
+        for (const number of batch) {
+            const formattedNumber = `+${number}`;
+            const previous = positions.get(formattedNumber);
+            if (previous === undefined) positions.set(formattedNumber, index);
+            else if (Array.isArray(previous)) previous.push(index);
+            else positions.set(formattedNumber, [previous, index]);
+            index++;
+        }
+    }
+
+    return () => {
+        for (const key of ['targetBusiness', 'targetPersonal', 'targetUnregistered']) {
+            const nextOccurrence = new Map();
+            sharedState[key] = sharedState[key]
+                .map((entry, originalIndex) => {
+                    const occurrences = positions.get(entry.number);
+                    const occurrence = nextOccurrence.get(entry.number) || 0;
+                    nextOccurrence.set(entry.number, occurrence + 1);
+                    return {
+                        entry,
+                        originalIndex,
+                        position: (Array.isArray(occurrences)
+                            ? occurrences[occurrence]
+                            : occurrence === 0 ? occurrences : undefined) ?? Number.MAX_SAFE_INTEGER
+                    };
+                })
+                .sort((a, b) => a.position - b.position || a.originalIndex - b.originalIndex)
+                .map(item => item.entry);
+        }
+    };
+};
+
+const runScannerPool = async (workers, { onWorkerStatus = () => {}, persist = saveReport } = {}) => {
+    const sortResultsByInputOrder = createInputOrderSorter(sharedState.batches);
+    const completed = new Set(Array.isArray(sharedState.completedBatchIndices)
+        ? sharedState.completedBatchIndices
+        : Array.from({ length: sharedState.batchIndex }, (_, index) => index));
+    const pending = sharedState.batches
+        .map((_, index) => index)
+        .filter(index => !completed.has(index));
+    const activeWorkers = new Set(workers);
+    const workersWithCompletedBatch = new Set();
+    let saveCounter = 0;
+    const setWorkerStatus = (...args) => {
+        try {
+            onWorkerStatus(...args);
+        } catch (error) {
+            minimalLog('error', `failed to update status for sender ${args[0]}: ${error.message}`);
+        }
+    };
+
+    const workerLoop = async worker => {
+        while (worker.available && activeWorkers.has(worker)) {
+            if (pending.length === 0) return;
+            if (workersWithCompletedBatch.has(worker)) {
+                const batchDelay = Math.floor(Math.random() * (1000 - 500 + 1)) + 500;
+                minimalLog('system', `sender ${worker.folder} cooling down ${batchDelay / 1000} seconds...`);
+                await delay(batchDelay, batchDelay);
+                if (!worker.available) break;
+            }
+            const batchIndex = pending.shift();
+            if (batchIndex === undefined) return;
+            const batchState = {
+                ...sharedState,
+                isEngineRunning: true,
+                batchIndex: 0,
+                batches: [sharedState.batches[batchIndex]],
+                targetBusiness: [],
+                targetPersonal: [],
+                targetUnregistered: [],
+                statistics: createEmptyStatistics()
+            };
+
+            setWorkerStatus(worker.folder, 'scanning');
+            let failureSignal;
+            let batchError;
+            try {
+                const runBatch = scanStateStorage.run(batchState, () => runScanner(worker.sock, {
+                    exitOnError: false,
+                    persist: false,
+                    finalize: false,
+                    closeSocket: false,
+                    logCompletion: false,
+                    logErrors: false
+                }));
+                failureSignal = worker.watchFailure();
+                const result = await Promise.race([
+                    runBatch.then(() => ({ success: true }), error => ({ error })),
+                    failureSignal.promise
+                ]);
+                if (!result.success || !worker.available) {
+                    throw result.error || new Error(`Sender ${worker.folder} disconnected during a batch.`);
+                }
+            } catch (error) {
+                batchError = error;
+            } finally {
+                failureSignal?.cancel();
+            }
+
+            if (batchError) {
+                minimalLog('error', `sender ${worker.folder} failed during a batch; retrying it elsewhere: ${batchError.message}`);
+                if (worker.available) {
+                    worker.available = false;
+                    worker.close(batchError);
+                }
+                activeWorkers.delete(worker);
+                setWorkerStatus(worker.folder, 'inactive', batchError.message);
+                pending.unshift(batchIndex);
+                continue;
+            }
+
+            commitBatchState(batchState);
+            completed.add(batchIndex);
+            sharedState.completedBatchIndices = [...completed].sort((a, b) => a - b);
+            sharedState.batchIndex = 0;
+            while (completed.has(sharedState.batchIndex)) sharedState.batchIndex++;
+            workersWithCompletedBatch.add(worker);
+            saveCounter++;
+            setWorkerStatus(worker.folder, 'active');
+
+            if (saveCounter >= 10) {
+                sortResultsByInputOrder();
+                persist();
+                saveCounter = 0;
+            }
+        }
+        if (!worker.available) activeWorkers.delete(worker);
+    };
+
+    await Promise.all(workers.map(workerLoop));
+    while (pending.length > 0 && activeWorkers.size > 0) {
+        await Promise.all([...activeWorkers].map(workerLoop));
+    }
+    if (pending.length > 0) {
+        sharedState.multiSenderScan = true;
+        sharedState.completedBatchIndices = [...completed].sort((a, b) => a - b);
+        sharedState.batchIndex = 0;
+        while (completed.has(sharedState.batchIndex)) sharedState.batchIndex++;
+        sortResultsByInputOrder();
+        persist();
+        minimalLog('error', 'all scan senders are unavailable; remaining batches were saved for resume.');
+        return { status: 'paused', completedBatches: completed.size, remainingBatches: pending.length };
+    }
+
+    sharedState.batchIndex = sharedState.batches.length;
+    sharedState.completedBatchIndices = [];
+    sharedState.multiSenderScan = false;
+    sortResultsByInputOrder();
+    persist();
+    minimalLog('done', `[report] business: ${sharedState.targetBusiness.length} | personal: ${sharedState.statistics.personal} | unregistered: ${sharedState.statistics.unregistered}++`);
+    minimalLog('system', 'multi-sender scanning process completed.');
+    const cleanName = sharedState.activeTargetFile.replace('.txt', '');
+    const checkpointFile = `checkpoint_${cleanName}.json`;
+    if (cleanName && fs.existsSync(checkpointFile)) fs.unlinkSync(checkpointFile);
+    return { status: 'completed', completedBatches: completed.size };
+};
 const findAttribute = (node, attrName) => {
     if (node?.attrs && node.attrs[attrName]) return node.attrs[attrName];
     if (Array.isArray(node?.content)) {
@@ -38,7 +217,15 @@ const extractText = (content) => {
     return String(content);
 };
 
-const runScanner = async (sock, { exitOnError = true } = {}) => {
+const runScanner = async (sock, {
+    exitOnError = true,
+    persist = true,
+    finalize = true,
+    closeSocket = true,
+    logCompletion = true,
+    logErrors = true
+} = {}) => {
+    const state = scanStateStorage.getStore() || sharedState;
     try {
         for (; state.batchIndex < state.batches.length; state.batchIndex++) {
             const currentBatch = state.batches[state.batchIndex];
@@ -273,14 +460,14 @@ const runScanner = async (sock, { exitOnError = true } = {}) => {
                     });
                 }
             } catch (e) {
-                minimalLog('error', 'batch scanning interrupted:\n' + e.stack);
+                if (logErrors) minimalLog('error', 'batch scanning interrupted:\n' + e.stack);
                 throw e; 
             }
 
             const isMultipleOf10 = (state.batchIndex + 1) % 10 === 0;
             const isFinished = state.batchIndex === state.batches.length - 1;
 
-            if (isMultipleOf10 || isFinished) {
+            if (persist && (isMultipleOf10 || isFinished)) {
                 minimalLog('system', `[auto-save] sorting and writing data (batch ${state.batchIndex + 1})...`);
                 saveReport();
             }
@@ -292,29 +479,35 @@ const runScanner = async (sock, { exitOnError = true } = {}) => {
             }
         }
 
-        minimalLog('done', `[report] business: ${state.targetBusiness.length} | personal: ${state.statistics.personal} | unregistered: ${state.statistics.unregistered}++`);
-        minimalLog('system', 'scanning process completed.');
-        console.log('\n[!] press ctrl+c to terminate the process, then restart the script to return to the menu.');
+        if (logCompletion) {
+            minimalLog('done', `[report] business: ${state.targetBusiness.length} | personal: ${state.statistics.personal} | unregistered: ${state.statistics.unregistered}++`);
+            minimalLog('system', 'scanning process completed.');
+            console.log('\n[!] press ctrl+c to terminate the process, then restart the script to return to the menu.');
+        }
         
         const cleanName = state.activeTargetFile ? state.activeTargetFile.replace('.txt', '') : '';
-        if (cleanName && fs.existsSync(`checkpoint_${cleanName}.json`)) {
+        if (finalize && cleanName && fs.existsSync(`checkpoint_${cleanName}.json`)) {
             fs.unlinkSync(`checkpoint_${cleanName}.json`);
         }
         
-        sock.ws.close();
-        sock.ev.removeAllListeners();
+        if (closeSocket) {
+            sock.ws.close();
+            sock.ev.removeAllListeners();
+        }
         return;
 
     } catch (e) {
-        minimalLog('error', 'fatal scanner failure:\n' + e.stack);
+        if (logErrors) minimalLog('error', 'fatal scanner failure:\n' + e.stack);
         state.isEngineRunning = false;
         
-        minimalLog('system', '[memory dump] saving remaining data to disk...');
-        saveReport(); 
+        if (persist) {
+            minimalLog('system', '[memory dump] saving remaining data to disk...');
+            saveReport();
+        }
         
         if (exitOnError) process.exit(1);
         throw e;
     }
 };
 
-module.exports = { runScanner };
+module.exports = { runScanner, runScannerPool };

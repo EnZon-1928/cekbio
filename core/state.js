@@ -8,6 +8,9 @@ const state = {
     activeTargetFile: '', 
     batchIndex: 0,
     batches: [],
+    multiSenderScan: false,
+    completedBatchIndices: [],
+    scanBatchSize: null,
     targetBusiness: [],
     targetPersonal: [],
     targetUnregistered: [],
@@ -18,13 +21,6 @@ const saveReport = () => {
     try {
         const completionTime = new Date().toLocaleString('id-ID');
         const cleanName = state.activeTargetFile ? state.activeTargetFile.replace('.txt', '') : 'unknown';
-
-        if (state.activeTargetFile) {
-            fs.writeFileSync(`checkpoint_${cleanName}.json`, JSON.stringify({
-                batchIndex: state.batchIndex,
-                totalBatches: state.batches.length
-            }));
-        }
 
         // 1. Process Business Data
         state.targetBusiness.sort((a, b) => b.tier - a.tier);
@@ -76,6 +72,20 @@ const saveReport = () => {
         unregisteredContent += `────── 🚫 NOT REGISTERED ───────\n`;
         unregisteredContent += mappedUnregisteredLog.length > 0 ? mappedUnregisteredLog.join('\n') : `   (empty)\n`;
         fs.writeFileSync(`result_unregistered_${cleanName}.txt`, unregisteredContent);
+
+        if (state.activeTargetFile) {
+            const checkpoint = {
+                batchIndex: state.batchIndex,
+                totalBatches: state.batches.length
+            };
+            if (state.multiSenderScan) {
+                checkpoint.multiSender = true;
+                checkpoint.targetFile = state.activeTargetFile;
+                checkpoint.batchSize = state.scanBatchSize;
+                checkpoint.completedBatchIndices = state.completedBatchIndices;
+            }
+            fs.writeFileSync(`checkpoint_${cleanName}.json`, JSON.stringify(checkpoint));
+        }
 
     } catch (e) {
         minimalLog('error', 'failed to execute absolute auto-save:\n' + e.stack);
