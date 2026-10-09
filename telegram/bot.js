@@ -6,6 +6,8 @@ const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const RESULT_PATTERN = /^result_(business|personal|unregistered)_(.+)\.txt$/;
 const ACTION_TTL_MS = 10 * 60 * 1000;
 const LIST_PAGE_SIZE = 6;
+const PAIRING_REFRESH_INTERVAL_MS = 500;
+const PAIRING_REFRESH_MAX_DURATION_MS = 185000;
 
 const validateTelegramConfig = ({ token, ownerId }) => {
     if (typeof token !== 'string' || !token.trim()) {
@@ -42,6 +44,9 @@ const createActiveTargetSelection = () => {
         reconcile(availableTargets) {
             if (activeTarget && !availableTargets.includes(activeTarget)) activeTarget = null;
             return activeTarget;
+        },
+        clear() {
+            activeTarget = null;
         }
     };
 };
@@ -49,6 +54,68 @@ const createActiveTargetSelection = () => {
 const addPairingCodeCopyButton = (keyboard, pairingCode) => {
     keyboard.copyText('📋 Copy code', pairingCode).row();
     return keyboard;
+};
+
+const isPairingInProgress = sender => sender?.status === 'running'
+    && !sender.mode
+    && (!sender.sessionFolder || Boolean(sender.pairingCode));
+
+const shouldContinuePairingRefresh = (sender, expiresAt, now = Date.now()) =>
+    isPairingInProgress(sender) && now < expiresAt;
+
+const getVisiblePairingCode = sender =>
+    isPairingInProgress(sender) && typeof sender.pairingCode === 'string'
+        ? sender.pairingCode
+        : null;
+
+const buildMainMenuKeyboard = ({ targets, activeTarget, page, callbackData }) => {
+    const keyboard = new InlineKeyboard();
+    const { page: currentPage, pageCount, items } = paginateItems(targets, page);
+    const addButton = (label, payload) =>
+        keyboard.text([...String(label)].slice(0, 60).join(''), callbackData(payload));
+
+    addButton('📊 Status', { type: 'show-status' });
+    addButton('👤 Senders', { type: 'show-senders', page: 0 }).row();
+    addButton('🔎 Scan', { type: 'show-scan', page: 0 });
+    addButton('📦 Results', { type: 'show-results', page: 0 }).row();
+    addButton('⬆️ Upload Targets', { type: 'upload-targets', page: currentPage }).row();
+
+    for (const target of items) {
+        addButton(
+            formatTargetButtonLabel(target, target === activeTarget),
+            { type: 'select-target', filename: target, page: currentPage, returnToMain: true }
+        ).row();
+    }
+
+    if (pageCount > 1) {
+        if (currentPage > 0) {
+            addButton('⬅️ Previous', { type: 'main-menu-page', page: currentPage - 1 });
+        }
+        if (currentPage + 1 < pageCount) {
+            addButton('Next ➡️', { type: 'main-menu-page', page: currentPage + 1 });
+        }
+        keyboard.row();
+    }
+    return keyboard;
+};
+
+const formatMainMenuText = (message, activeTarget, page, pageCount, targetCount) => {
+    const targetStatus = activeTarget
+        ? `Active target: ${getTargetDisplayName(activeTarget)}`
+        : 'No active target selected.';
+    const targetGuidance = targetCount
+        ? 'Select one target below, or upload a new list.'
+        : 'Upload a .txt or .xlsx document to add a target list.';
+    return [
+        'cekbio',
+        '',
+        message,
+        '',
+        'Targets',
+        targetStatus,
+        targetGuidance,
+        ...(pageCount > 1 ? [`Page ${page + 1} of ${pageCount}`] : [])
+    ].join('\n');
 };
 
 const isAuthorizedUpdate = (ctx, ownerId) => Boolean(ctx.from
@@ -121,6 +188,8 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     const activeTargetSelection = createActiveTargetSelection();
     const pendingBatchSizes = new Map();
     const pendingSenderNumbers = new Map();
+    const pairingRefreshTimers = new Map();
+    const pairingRefreshErrors = new Set();
 
     const registerAction = (payload) => {
         return actions.create(payload);
@@ -136,14 +205,23 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
         return ctx.callbackQuery ? ctx.editMessageText(text, options) : ctx.reply(text, options);
     };
 
-    const mainMenuKeyboard = () => {
-        const keyboard = new InlineKeyboard();
-        actionButton(keyboard, '📊 Status', { type: 'show-status' });
-        actionButton(keyboard, '👤 Senders', { type: 'show-senders', page: 0 }).row();
-        actionButton(keyboard, '📄 Targets', { type: 'show-targets', page: 0 });
-        actionButton(keyboard, '🔎 Scan', { type: 'show-scan', page: 0 }).row();
-        actionButton(keyboard, '📦 Results', { type: 'show-results', page: 0 });
-        return keyboard;
+    const clearPairingRefresh = (chatId, clearErrors = true) => {
+        const refresh = pairingRefreshTimers.get(chatId);
+        if (refresh) {
+            refresh.active = false;
+            clearTimeout(refresh.timer);
+        }
+        pairingRefreshTimers.delete(chatId);
+        if (clearErrors) pairingRefreshErrors.delete(chatId);
+    };
+
+    const mainMenuKeyboard = (targets, activeTarget, page) => {
+        return buildMainMenuKeyboard({
+            targets,
+            activeTarget,
+            page,
+            callbackData: registerAction
+        });
     };
 
     const addMenuButton = (keyboard, label = '🏠 Main menu') => {
@@ -151,11 +229,17 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
         return keyboard;
     };
 
-    const showMainMenu = (ctx, message = 'What would you like to do?') =>
-        present(ctx, `cekbio\n\n${message}`, mainMenuKeyboard());
+    const showMainMenu = async (ctx, message = 'What would you like to do?', page = 0) => {
+        if (ctx.chat?.id) clearPairingRefresh(ctx.chat.id);
+        const { targets } = await api('/api/targets');
+        const activeTarget = activeTargetSelection.reconcile(targets);
+        const { page: currentPage, pageCount } = paginateItems(targets, page);
+        const text = formatMainMenuText(message, activeTarget, currentPage, pageCount, targets.length);
+        return present(ctx, text, mainMenuKeyboard(targets, activeTarget, currentPage));
+    };
 
-    const showStatus = async (ctx, message) => {
-        const { scan, sender } = await api('/api/status');
+    const createStatusPresentation = (scan, sender, message, includePairingCode = true) => {
+        const pairingCode = includePairingCode ? getVisiblePairingCode(sender) : null;
         const lines = [`📊 cekbio status`, `Scan: ${scan?.status || 'idle'}`];
         if (message) lines.push(message);
         if (scan) {
@@ -165,17 +249,78 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
         }
         lines.push(`Sender operation: ${sender?.status || 'idle'}`);
         if (sender?.sessionFolder) lines.push(`Session: ${sender.sessionFolder}`);
-        if (sender?.pairingCode) {
-            lines.push(`Pairing code: ${sender.pairingCode}`);
+        if (pairingCode) {
+            lines.push(`Pairing code: ${pairingCode}`);
             lines.push('Enter this code in WhatsApp to link the sender.');
         }
         if (sender?.error) lines.push(`Sender error: ${sender.error}`);
         if (scan?.error) lines.push(`Scan error: ${scan.error}`);
         const keyboard = new InlineKeyboard();
-        if (sender?.pairingCode) addPairingCodeCopyButton(keyboard, sender.pairingCode);
+        if (pairingCode) addPairingCodeCopyButton(keyboard, pairingCode);
         actionButton(keyboard, '↻ Refresh', { type: 'show-status' });
         addMenuButton(keyboard).row();
-        return present(ctx, lines.join('\n'), keyboard);
+        return { text: lines.join('\n'), keyboard };
+    };
+
+    const schedulePairingRefresh = (chatId, messageId, expiresAt, preserveErrors = false) => {
+        clearPairingRefresh(chatId, !preserveErrors);
+        const refresh = { active: true, timer: null };
+        refresh.timer = setTimeout(async () => {
+            if (!refresh.active || pairingRefreshTimers.get(chatId) !== refresh) return;
+            try {
+                const { scan, sender } = await api('/api/status');
+                if (!refresh.active || pairingRefreshTimers.get(chatId) !== refresh) return;
+                const timedOut = Date.now() >= expiresAt;
+                const presentation = createStatusPresentation(
+                    scan,
+                    sender,
+                    timedOut ? 'Automatic refresh paused. Use Refresh to check again.' : null,
+                    !timedOut
+                );
+                await bot.api.editMessageText(chatId, messageId, presentation.text, {
+                    reply_markup: presentation.keyboard
+                });
+                pairingRefreshErrors.delete(chatId);
+                if (shouldContinuePairingRefresh(sender, expiresAt)) {
+                    schedulePairingRefresh(chatId, messageId, expiresAt, true);
+                } else {
+                    pairingRefreshTimers.delete(chatId);
+                    pairingRefreshErrors.delete(chatId);
+                }
+            } catch {
+                if (!refresh.active || pairingRefreshTimers.get(chatId) !== refresh) return;
+                if (Date.now() < expiresAt) {
+                    if (!pairingRefreshErrors.has(chatId)) {
+                        console.error('Telegram pairing status refresh failed; retrying while pairing remains active.');
+                        pairingRefreshErrors.add(chatId);
+                    }
+                    schedulePairingRefresh(chatId, messageId, expiresAt, true);
+                    return;
+                }
+                pairingRefreshTimers.delete(chatId);
+                pairingRefreshErrors.delete(chatId);
+                console.error('Telegram pairing status refresh stopped after repeated update failures.');
+            }
+        }, PAIRING_REFRESH_INTERVAL_MS);
+        refresh.timer.unref?.();
+        pairingRefreshTimers.set(chatId, refresh);
+    };
+
+    const showStatus = async (ctx, message) => {
+        const { scan, sender } = await api('/api/status');
+        const presentation = createStatusPresentation(scan, sender, message);
+        const result = await present(ctx, presentation.text, presentation.keyboard);
+        const messageId = ctx.callbackQuery?.message?.message_id || result?.message_id;
+        if (!isPairingInProgress(sender)) {
+            clearPairingRefresh(ctx.chat.id);
+        } else if (messageId) {
+            schedulePairingRefresh(
+                ctx.chat.id,
+                messageId,
+                Date.now() + PAIRING_REFRESH_MAX_DURATION_MS
+            );
+        }
+        return result;
     };
 
     const showCollection = async (ctx, kind, requestedPage = 0, message) => {
@@ -341,7 +486,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     const startSenderPairing = async (ctx, phoneNumber) => {
         await api('/api/senders', jsonPost({ phoneNumber }));
         pendingSenderNumbers.delete(String(ctx.from.id));
-        await showStatus(ctx, 'Pairing request started. Refresh this status to check for the code.');
+        await showStatus(ctx, 'Pairing request started. This status will refresh automatically while pairing is in progress.');
     };
 
     const promptSenderPhone = async ctx => {
@@ -445,6 +590,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
                 return;
             case 'delete-target':
                 await api(`${targetPath(action.filename)}/delete`, jsonPost({ confirm: true }));
+                if (activeTargetSelection.get() === action.filename) activeTargetSelection.clear();
                 if (!action.suppressMenu) await showMainMenu(ctx, `Target list ${action.filename} and its checkpoint were removed.`);
                 return;
             case 'delete-result':
@@ -483,12 +629,22 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             case 'show-scan':
                 await showCollection(ctx, 'scan', action.page);
                 return;
+            case 'main-menu-page':
+                await showMainMenu(ctx, 'What would you like to do?', action.page);
+                return;
             case 'upload-targets': {
                 const keyboard = new InlineKeyboard();
-                actionButton(keyboard, '⬅️ Back to Targets', {
-                    type: 'show-targets',
-                    page: action.page || 0
-                });
+                if (action.returnToMain) {
+                    actionButton(keyboard, '⬅️ Back to menu', {
+                        type: 'main-menu-page',
+                        page: action.page || 0
+                    });
+                } else {
+                    actionButton(keyboard, '⬅️ Back to Targets', {
+                        type: 'show-targets',
+                        page: action.page || 0
+                    });
+                }
                 actionButton(keyboard, 'Cancel', { type: 'main-menu' }).row();
                 await present(
                     ctx,
@@ -500,12 +656,20 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             case 'select-target': {
                 const { targets } = await api('/api/targets');
                 activeTargetSelection.select(action.filename, targets);
-                await showCollection(
-                    ctx,
-                    'targets',
-                    action.page,
-                    `Active target set to ${getTargetDisplayName(action.filename)}.`
-                );
+                if (action.returnToMain) {
+                    await showMainMenu(
+                        ctx,
+                        `Active target set to ${getTargetDisplayName(action.filename)}.`,
+                        action.page
+                    );
+                } else {
+                    await showCollection(
+                        ctx,
+                        'targets',
+                        action.page,
+                        `Active target set to ${getTargetDisplayName(action.filename)}.`
+                    );
+                }
                 return;
             }
             case 'sender-details':
@@ -643,6 +807,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             await showMainMenu(ctx, 'That button expired. Please choose an option again.');
             return;
         }
+        if (action.type !== 'show-status') clearPairingRefresh(ctx.chat.id);
         try {
             await performAction(ctx, action);
         } catch (error) {
@@ -652,10 +817,10 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     bot.callbackQuery('noop', async ctx => ctx.answerCallbackQuery());
 
     bot.command(['start', 'help'], async ctx => {
-        await showMainMenu(ctx, 'Choose an action below. You can also send a .txt or .xlsx file to add a target list.');
+        await showMainMenu(ctx, 'Choose an action below.');
     });
 
-    bot.command('status', showStatus);
+    bot.command('status', ctx => showStatus(ctx));
     bot.command('senders', ctx => showCollection(ctx, 'senders'));
     bot.command('targets', ctx => showCollection(ctx, 'targets'));
     bot.command('results', ctx => showCollection(ctx, 'results'));
@@ -749,13 +914,13 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             if (extension === '.txt') {
                 const text = new TextDecoder('utf-8', { fatal: true }).decode(contents);
                 const result = await api('/api/targets', jsonPost({ name: filename, contents: text }));
-                await ctx.reply(`Target list ${result.target} was uploaded. Open Targets to choose it as the active scan target.`);
+                await showMainMenu(ctx, `Target list ${result.target} was uploaded. Choose it below to make it active.`);
             } else {
                 const result = await api('/api/targets/xlsx', jsonPost({
                     name: filename,
                     contentsBase64: contents.toString('base64')
                 }));
-                await ctx.reply(`${result.message} Open Targets to choose it as the active scan target.`);
+                await showMainMenu(ctx, `${result.message} Choose the target below to make it active.`);
             }
         } catch (error) {
             await ctx.reply(error.message || 'The target file could not be uploaded.');
@@ -792,18 +957,31 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
 
     return {
         bot,
-        stop: () => bot.stop(),
+        stop: () => {
+            for (const refresh of pairingRefreshTimers.values()) {
+                refresh.active = false;
+                clearTimeout(refresh.timer);
+            }
+            pairingRefreshTimers.clear();
+            pairingRefreshErrors.clear();
+            return bot.stop();
+        },
         polling
     };
 };
 
 module.exports = {
     addPairingCodeCopyButton,
+    buildMainMenuKeyboard,
     createActionRegistry,
     createActiveTargetSelection,
     formatTargetButtonLabel,
+    formatMainMenuText,
     getTargetDisplayName,
+    getVisiblePairingCode,
     isAuthorizedUpdate,
+    isPairingInProgress,
+    shouldContinuePairingRefresh,
     isResultFilename,
     paginateItems,
     startTelegramBot,

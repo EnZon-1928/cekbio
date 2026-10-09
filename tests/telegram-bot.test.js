@@ -4,13 +4,18 @@ const { InlineKeyboard } = require('grammy');
 
 const {
     addPairingCodeCopyButton,
+    buildMainMenuKeyboard,
     createActionRegistry,
     createActiveTargetSelection,
     formatTargetButtonLabel,
+    formatMainMenuText,
     getTargetDisplayName,
+    getVisiblePairingCode,
     isAuthorizedUpdate,
+    isPairingInProgress,
     isResultFilename,
     paginateItems,
+    shouldContinuePairingRefresh,
     validateTelegramConfig
 } = require('../telegram/bot');
 
@@ -104,4 +109,40 @@ test('target buttons show friendly names and a single active target can be repla
     assert.equal(selection.get(), secondTarget);
     assert.equal(selection.reconcile([firstTarget]), null);
     assert.throws(() => selection.select(secondTarget, [firstTarget]), /not found/);
+});
+
+test('start menu shows Targets heading, upload action, and one full-width button per target', () => {
+    const targets = ['target_business_one.txt', 'target_personal_two.txt'];
+    const keyboard = buildMainMenuKeyboard({
+        targets,
+        activeTarget: targets[1],
+        page: 0,
+        callbackData: payload => JSON.stringify(payload)
+    });
+    const rows = keyboard.inline_keyboard;
+    const labels = rows.flat().map(button => button.text);
+    const text = formatMainMenuText('Choose an action below.', targets[1], 0, 1, targets.length);
+
+    assert.match(text, /\nTargets\n/);
+    assert.ok(labels.includes('⬆️ Upload Targets'));
+    assert.ok(labels.includes('◯ business_one'));
+    assert.ok(labels.includes('✅ personal_two'));
+    assert.deepEqual(rows.find(row => row[0].text === '⬆️ Upload Targets').map(button => button.text), ['⬆️ Upload Targets']);
+    assert.deepEqual(rows.find(row => row[0].text === '✅ personal_two').map(button => button.text), ['✅ personal_two']);
+    assert.equal(labels.includes('📄 Targets'), false);
+});
+
+test('pairing code is available only while the pairing operation is running', () => {
+    const runningSender = { status: 'running', pairingCode: '581204' };
+    const connectedSender = { status: 'connected', pairingCode: '581204' };
+
+    assert.equal(isPairingInProgress(runningSender), true);
+    assert.equal(getVisiblePairingCode(runningSender), '581204');
+    assert.equal(isPairingInProgress(connectedSender), false);
+    assert.equal(getVisiblePairingCode(connectedSender), null);
+    assert.equal(isPairingInProgress({ status: 'running', mode: 'check-all' }), false);
+    assert.equal(isPairingInProgress({ status: 'running', sessionFolder: 'sender_1' }), false);
+    assert.equal(shouldContinuePairingRefresh(runningSender, 2_000, 1_000), true);
+    assert.equal(shouldContinuePairingRefresh(connectedSender, 2_000, 1_000), false);
+    assert.equal(shouldContinuePairingRefresh(runningSender, 1_000, 1_000), false);
 });
