@@ -21,6 +21,36 @@ const isResultFilename = filename => typeof filename === 'string'
     && path.basename(filename) === filename
     && RESULT_PATTERN.test(filename);
 
+const getTargetDisplayName = filename => filename
+    .replace(/^target_/, '')
+    .replace(/\.txt$/i, '');
+
+const formatTargetButtonLabel = (filename, isActive) =>
+    `${isActive ? '✅' : '◯'} ${getTargetDisplayName(filename)}`;
+
+const createActiveTargetSelection = () => {
+    let activeTarget = null;
+    return {
+        get() {
+            return activeTarget;
+        },
+        select(filename, availableTargets) {
+            if (!availableTargets.includes(filename)) throw new Error('Target list not found.');
+            activeTarget = filename;
+            return activeTarget;
+        },
+        reconcile(availableTargets) {
+            if (activeTarget && !availableTargets.includes(activeTarget)) activeTarget = null;
+            return activeTarget;
+        }
+    };
+};
+
+const addPairingCodeCopyButton = (keyboard, pairingCode) => {
+    keyboard.copyText('📋 Copy code', pairingCode).row();
+    return keyboard;
+};
+
 const isAuthorizedUpdate = (ctx, ownerId) => Boolean(ctx.from
     && ctx.chat?.type === 'private'
     && ctx.chat.id === ctx.from.id
@@ -88,6 +118,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     const bot = new Bot(token);
     const api = createApiClient(baseUrl);
     const actions = createActionRegistry();
+    const activeTargetSelection = createActiveTargetSelection();
     const pendingBatchSizes = new Map();
     const pendingSenderNumbers = new Map();
 
@@ -123,9 +154,10 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     const showMainMenu = (ctx, message = 'What would you like to do?') =>
         present(ctx, `cekbio\n\n${message}`, mainMenuKeyboard());
 
-    const showStatus = async ctx => {
+    const showStatus = async (ctx, message) => {
         const { scan, sender } = await api('/api/status');
         const lines = [`📊 cekbio status`, `Scan: ${scan?.status || 'idle'}`];
+        if (message) lines.push(message);
         if (scan) {
             lines.push(`Target: ${scan.targetFile}`);
             lines.push(`Sender: ${scan.sessionFolder}`);
@@ -133,19 +165,23 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
         }
         lines.push(`Sender operation: ${sender?.status || 'idle'}`);
         if (sender?.sessionFolder) lines.push(`Session: ${sender.sessionFolder}`);
-        if (sender?.pairingCode) lines.push(`Pairing code: ${sender.pairingCode}`);
+        if (sender?.pairingCode) {
+            lines.push(`Pairing code: ${sender.pairingCode}`);
+            lines.push('Enter this code in WhatsApp to link the sender.');
+        }
         if (sender?.error) lines.push(`Sender error: ${sender.error}`);
         if (scan?.error) lines.push(`Scan error: ${scan.error}`);
         const keyboard = new InlineKeyboard();
+        if (sender?.pairingCode) addPairingCodeCopyButton(keyboard, sender.pairingCode);
         actionButton(keyboard, '↻ Refresh', { type: 'show-status' });
         addMenuButton(keyboard).row();
         return present(ctx, lines.join('\n'), keyboard);
     };
 
-    const showCollection = async (ctx, kind, requestedPage = 0) => {
+    const showCollection = async (ctx, kind, requestedPage = 0, message) => {
         const config = {
             senders: { endpoint: '/api/senders', key: 'senders', heading: '👤 Sender sessions' },
-            targets: { endpoint: '/api/targets', key: 'targets', heading: '📄 Target lists' },
+            targets: { endpoint: '/api/targets', key: 'targets', heading: 'Targets' },
             results: { endpoint: '/api/results', key: 'results', heading: '📦 Scan results' },
             scan: { endpoint: '/api/targets', key: 'targets', heading: '🔎 Choose a target to scan' }
         }[kind];
@@ -153,21 +189,40 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
         const response = await api(config.endpoint);
         const allItems = response[config.key];
         const items = kind === 'results' ? allItems.filter(isResultFilename) : allItems;
+        const activeTarget = kind === 'targets' || kind === 'scan'
+            ? activeTargetSelection.reconcile(response.targets)
+            : null;
         const { page, pageCount, items: visibleItems } = paginateItems(items, requestedPage);
         const keyboard = new InlineKeyboard();
 
         if (kind === 'senders') {
             actionButton(keyboard, '➕ Add sender', { type: 'add-sender' }).row();
+        } else if (kind === 'targets') {
+            actionButton(keyboard, '⬆️ Upload Targets', { type: 'upload-targets', page }).row();
+        } else if (kind === 'scan' && activeTarget) {
+            actionButton(
+                keyboard,
+                `▶️ Scan active: ${getTargetDisplayName(activeTarget)}`,
+                { type: 'scan-target', target: activeTarget, page: 0 }
+            ).row();
         }
         visibleItems.forEach(item => {
             if (kind === 'senders') {
                 actionButton(keyboard, item, { type: 'sender-details', folder: item, page });
             } else if (kind === 'targets') {
-                actionButton(keyboard, item, { type: 'target-details', filename: item, page });
+                actionButton(
+                    keyboard,
+                    formatTargetButtonLabel(item, item === activeTarget),
+                    { type: 'select-target', filename: item, page }
+                );
             } else if (kind === 'results') {
                 actionButton(keyboard, item, { type: 'result-details', filename: item, page });
             } else {
-                actionButton(keyboard, item, { type: 'scan-target', target: item, page });
+                actionButton(
+                    keyboard,
+                    formatTargetButtonLabel(item, item === activeTarget),
+                    { type: 'scan-target', target: item, page }
+                );
             }
             keyboard.row();
             if (kind === 'senders') {
@@ -213,11 +268,13 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             : kind === 'scan'
                 ? 'No target lists found. Send a .txt or .xlsx document to this chat to add one.'
                 : kind === 'targets'
-                    ? 'No target lists found. Send a .txt or .xlsx document to this chat to add one.'
+                    ? 'Send a .txt or .xlsx document to this chat using Upload Targets.'
                     : 'No sender sessions found. Add a sender from the Senders menu.';
-        const text = items.length
-            ? `${config.heading} · page ${page + 1} of ${pageCount}`
-            : `${config.heading}\n\n${emptyMessage}`;
+        const text = kind === 'targets'
+            ? `${config.heading}\n\n${message ? `${message}\n` : ''}${items.length ? 'Choose one target to make it active.' : emptyMessage}${pageCount > 1 ? `\nPage ${page + 1} of ${pageCount}` : ''}`
+            : items.length
+                ? `${config.heading} · page ${page + 1} of ${pageCount}`
+                : `${config.heading}\n\n${emptyMessage}`;
         return present(ctx, text, keyboard);
     };
 
@@ -284,7 +341,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     const startSenderPairing = async (ctx, phoneNumber) => {
         await api('/api/senders', jsonPost({ phoneNumber }));
         pendingSenderNumbers.delete(String(ctx.from.id));
-        await showMainMenu(ctx, 'Sender pairing started. Open Status to retrieve the pairing code.');
+        await showStatus(ctx, 'Pairing request started. Refresh this status to check for the code.');
     };
 
     const promptSenderPhone = async ctx => {
@@ -426,6 +483,31 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             case 'show-scan':
                 await showCollection(ctx, 'scan', action.page);
                 return;
+            case 'upload-targets': {
+                const keyboard = new InlineKeyboard();
+                actionButton(keyboard, '⬅️ Back to Targets', {
+                    type: 'show-targets',
+                    page: action.page || 0
+                });
+                actionButton(keyboard, 'Cancel', { type: 'main-menu' }).row();
+                await present(
+                    ctx,
+                    'Upload Targets\n\nSend a .txt or .xlsx document to this chat to add a target list.',
+                    keyboard
+                );
+                return;
+            }
+            case 'select-target': {
+                const { targets } = await api('/api/targets');
+                activeTargetSelection.select(action.filename, targets);
+                await showCollection(
+                    ctx,
+                    'targets',
+                    action.page,
+                    `Active target set to ${getTargetDisplayName(action.filename)}.`
+                );
+                return;
+            }
             case 'sender-details':
                 await showItemDetails(ctx, 'sender', action.folder, action.page);
                 return;
@@ -444,6 +526,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
                     api('/api/senders'),
                     api('/api/targets')
                 ]);
+                activeTargetSelection.select(action.target, targetData.targets);
                 if (!senders.senders.length) {
                     await showMainMenu(ctx, 'No sender sessions are available. Add a sender first from Senders.');
                     return;
@@ -666,13 +749,13 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             if (extension === '.txt') {
                 const text = new TextDecoder('utf-8', { fatal: true }).decode(contents);
                 const result = await api('/api/targets', jsonPost({ name: filename, contents: text }));
-                await ctx.reply(`Target list ${result.target} was uploaded.`);
+                await ctx.reply(`Target list ${result.target} was uploaded. Open Targets to choose it as the active scan target.`);
             } else {
                 const result = await api('/api/targets/xlsx', jsonPost({
                     name: filename,
                     contentsBase64: contents.toString('base64')
                 }));
-                await ctx.reply(result.message);
+                await ctx.reply(`${result.message} Open Targets to choose it as the active scan target.`);
             }
         } catch (error) {
             await ctx.reply(error.message || 'The target file could not be uploaded.');
@@ -715,7 +798,11 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
 };
 
 module.exports = {
+    addPairingCodeCopyButton,
     createActionRegistry,
+    createActiveTargetSelection,
+    formatTargetButtonLabel,
+    getTargetDisplayName,
     isAuthorizedUpdate,
     isResultFilename,
     paginateItems,

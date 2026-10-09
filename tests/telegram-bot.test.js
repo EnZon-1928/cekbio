@@ -1,8 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { InlineKeyboard } = require('grammy');
 
 const {
+    addPairingCodeCopyButton,
     createActionRegistry,
+    createActiveTargetSelection,
+    formatTargetButtonLabel,
+    getTargetDisplayName,
     isAuthorizedUpdate,
     isResultFilename,
     paginateItems,
@@ -75,4 +80,28 @@ test('inline actions can only be consumed once and expire', () => {
     now += 10 * 60 * 1000;
     assert.equal(registry.consume(expiredCallback), null);
     assert.equal(registry.consume('invalid'), null);
+});
+
+test('pairing-code copy button copies only the code', () => {
+    const keyboard = addPairingCodeCopyButton(new InlineKeyboard(), '581204');
+    const copyButton = keyboard.inline_keyboard.flat().find(button => button.copy_text);
+
+    assert.equal(copyButton.text, '📋 Copy code');
+    assert.deepEqual(copyButton.copy_text, { text: '581204' });
+});
+
+test('target buttons show friendly names and a single active target can be replaced', () => {
+    const firstTarget = 'target_business_custom-list.txt';
+    const secondTarget = 'target_personal_custom-list.txt';
+    const selection = createActiveTargetSelection();
+
+    assert.equal(getTargetDisplayName(firstTarget), 'business_custom-list');
+    assert.equal(formatTargetButtonLabel(firstTarget, false), '◯ business_custom-list');
+    assert.equal(formatTargetButtonLabel(firstTarget, true), '✅ business_custom-list');
+    assert.equal(selection.get(), null);
+    assert.equal(selection.select(firstTarget, [firstTarget, secondTarget]), firstTarget);
+    assert.equal(selection.select(secondTarget, [firstTarget, secondTarget]), secondTarget);
+    assert.equal(selection.get(), secondTarget);
+    assert.equal(selection.reconcile([firstTarget]), null);
+    assert.throws(() => selection.select(secondTarget, [firstTarget]), /not found/);
 });
