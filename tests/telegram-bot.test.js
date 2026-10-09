@@ -2,8 +2,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+    createActionRegistry,
     isAuthorizedUpdate,
     isResultFilename,
+    paginateItems,
     validateTelegramConfig
 } = require('../telegram/bot');
 
@@ -39,4 +41,38 @@ test('only flat generated result text files may be sent to Telegram', () => {
     assert.equal(isResultFilename('report_business_targets.txt'), false);
     assert.equal(isResultFilename('../result_business_targets.txt'), false);
     assert.equal(isResultFilename('result_business_targets.json'), false);
+});
+
+test('list pagination clamps page numbers and returns stable page counts', () => {
+    assert.deepEqual(paginateItems(['a', 'b', 'c'], 1, 2), {
+        page: 1,
+        pageCount: 2,
+        items: ['c']
+    });
+    assert.deepEqual(paginateItems(['a', 'b', 'c'], 20, 2), {
+        page: 1,
+        pageCount: 2,
+        items: ['c']
+    });
+    assert.deepEqual(paginateItems([], 0, 2), {
+        page: 0,
+        pageCount: 1,
+        items: []
+    });
+    assert.throws(() => paginateItems([], 0, 0), /positive integer/);
+});
+
+test('inline actions can only be consumed once and expire', () => {
+    let now = 1_000;
+    const registry = createActionRegistry(() => now);
+    const callbackData = registry.create({ type: 'show-status' });
+
+    assert.match(callbackData, /^a:[a-f0-9]{12}$/);
+    assert.deepEqual(registry.consume(callbackData), { type: 'show-status' });
+    assert.equal(registry.consume(callbackData), null);
+
+    const expiredCallback = registry.create({ type: 'show-results' });
+    now += 10 * 60 * 1000;
+    assert.equal(registry.consume(expiredCallback), null);
+    assert.equal(registry.consume('invalid'), null);
 });

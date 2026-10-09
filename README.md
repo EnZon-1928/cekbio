@@ -230,7 +230,7 @@ The Telegram bot can run alongside the dashboard on the same Windows Node.js pro
    npm run local
    ```
 
-   Open the local dashboard at `http://127.0.0.1:3000`. In your private Telegram chat, use `/help` for bot commands. Send a `.txt` or `.xlsx` document to the bot to add a target list.
+   Open the local dashboard at `http://127.0.0.1:3000`. In your private Telegram chat, send `/start` or `/help` to open the button menu. Use **Status**, **Senders**, **Targets**, **Scan**, and **Results** to navigate; scan setup offers sender, batch-size, and checkpoint choices with Back/Cancel buttons. You can still use slash commands. Send a `.txt` or `.xlsx` document to the bot to add a target list.
 
 The bot accepts commands only from the configured Telegram user ID in a private chat; group chats and all other users are ignored. It can manage sender sessions, start scans, and explicitly send generated `result_*.txt` files to your Telegram chat. It never sends target lists, internal `target_*.json` data, or WhatsApp session credentials. Keep `.env` private and do not send its contents to anyone or commit it. Use `npm run web` if you want to run only the dashboard.
 

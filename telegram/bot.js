@@ -5,6 +5,7 @@ const { Bot, InlineKeyboard, InputFile } = require('grammy');
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const RESULT_PATTERN = /^result_(business|personal|unregistered)_(.+)\.txt$/;
 const ACTION_TTL_MS = 10 * 60 * 1000;
+const LIST_PAGE_SIZE = 6;
 
 const validateTelegramConfig = ({ token, ownerId }) => {
     if (typeof token !== 'string' || !token.trim()) {
@@ -44,28 +45,254 @@ const createApiClient = baseUrl => async (pathname, options = {}) => {
 
 const jsonPost = body => ({ method: 'POST', body: JSON.stringify(body) });
 
+const paginateItems = (items, requestedPage, pageSize = LIST_PAGE_SIZE) => {
+    if (!Number.isSafeInteger(pageSize) || pageSize < 1) throw new Error('Page size must be a positive integer.');
+    const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+    const page = Math.max(0, Math.min(Number.isSafeInteger(requestedPage) ? requestedPage : 0, pageCount - 1));
+    return {
+        page,
+        pageCount,
+        items: items.slice(page * pageSize, (page + 1) * pageSize)
+    };
+};
+
+const createActionRegistry = (now = Date.now) => {
+    const entries = new Map();
+    return {
+        create(payload) {
+            for (const [key, entry] of entries) {
+                if (entry.expiresAt <= now()) entries.delete(key);
+            }
+            const key = crypto.randomBytes(6).toString('hex');
+            entries.set(key, { payload, expiresAt: now() + ACTION_TTL_MS });
+            return `a:${key}`;
+        },
+        consume(callbackData) {
+            const match = /^a:([a-f0-9]{12})$/.exec(callbackData || '');
+            if (!match) return null;
+            const entry = entries.get(match[1]);
+            entries.delete(match[1]);
+            if (!entry || entry.expiresAt <= now()) return null;
+            return entry.payload;
+        },
+        get size() {
+            return entries.size;
+        }
+    };
+};
+
 const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} }) => {
     validateTelegramConfig({ token, ownerId });
     ownerId = String(Number(ownerId));
 
     const bot = new Bot(token);
     const api = createApiClient(baseUrl);
-    const actions = new Map();
+    const actions = createActionRegistry();
     const pendingBatchSizes = new Map();
+    const pendingSenderNumbers = new Map();
 
     const registerAction = (payload) => {
-        const now = Date.now();
-        for (const [key, entry] of actions) {
-            if (entry.expiresAt <= now) actions.delete(key);
-        }
-        const key = crypto.randomBytes(6).toString('hex');
-        actions.set(key, { ...payload, expiresAt: now + ACTION_TTL_MS });
-        return `a:${key}`;
+        return actions.create(payload);
     };
 
     const actionButton = (keyboard, label, payload) => {
-        keyboard.text(label, registerAction(payload));
+        keyboard.text([...String(label)].slice(0, 60).join(''), registerAction(payload));
         return keyboard;
+    };
+
+    const present = (ctx, text, replyMarkup) => {
+        const options = { reply_markup: replyMarkup };
+        return ctx.callbackQuery ? ctx.editMessageText(text, options) : ctx.reply(text, options);
+    };
+
+    const mainMenuKeyboard = () => {
+        const keyboard = new InlineKeyboard();
+        actionButton(keyboard, '📊 Status', { type: 'show-status' });
+        actionButton(keyboard, '👤 Senders', { type: 'show-senders', page: 0 }).row();
+        actionButton(keyboard, '📄 Targets', { type: 'show-targets', page: 0 });
+        actionButton(keyboard, '🔎 Scan', { type: 'show-scan', page: 0 }).row();
+        actionButton(keyboard, '📦 Results', { type: 'show-results', page: 0 });
+        return keyboard;
+    };
+
+    const addMenuButton = (keyboard, label = '🏠 Main menu') => {
+        actionButton(keyboard, label, { type: 'main-menu' });
+        return keyboard;
+    };
+
+    const showMainMenu = (ctx, message = 'What would you like to do?') =>
+        present(ctx, `cekbio\n\n${message}`, mainMenuKeyboard());
+
+    const showStatus = async ctx => {
+        const { scan, sender } = await api('/api/status');
+        const lines = [`📊 cekbio status`, `Scan: ${scan?.status || 'idle'}`];
+        if (scan) {
+            lines.push(`Target: ${scan.targetFile}`);
+            lines.push(`Sender: ${scan.sessionFolder}`);
+            lines.push(`Progress: ${scan.completedTargets} / ${scan.totalTargets} targets`);
+        }
+        lines.push(`Sender operation: ${sender?.status || 'idle'}`);
+        if (sender?.sessionFolder) lines.push(`Session: ${sender.sessionFolder}`);
+        if (sender?.pairingCode) lines.push(`Pairing code: ${sender.pairingCode}`);
+        if (sender?.error) lines.push(`Sender error: ${sender.error}`);
+        if (scan?.error) lines.push(`Scan error: ${scan.error}`);
+        const keyboard = new InlineKeyboard();
+        actionButton(keyboard, '↻ Refresh', { type: 'show-status' });
+        addMenuButton(keyboard).row();
+        return present(ctx, lines.join('\n'), keyboard);
+    };
+
+    const showCollection = async (ctx, kind, requestedPage = 0) => {
+        const config = {
+            senders: { endpoint: '/api/senders', key: 'senders', heading: '👤 Sender sessions' },
+            targets: { endpoint: '/api/targets', key: 'targets', heading: '📄 Target lists' },
+            results: { endpoint: '/api/results', key: 'results', heading: '📦 Scan results' },
+            scan: { endpoint: '/api/targets', key: 'targets', heading: '🔎 Choose a target to scan' }
+        }[kind];
+        if (!config) throw new Error('This list is not available.');
+        const response = await api(config.endpoint);
+        const allItems = response[config.key];
+        const items = kind === 'results' ? allItems.filter(isResultFilename) : allItems;
+        const { page, pageCount, items: visibleItems } = paginateItems(items, requestedPage);
+        const keyboard = new InlineKeyboard();
+
+        if (kind === 'senders') {
+            actionButton(keyboard, '➕ Add sender', { type: 'add-sender' }).row();
+        }
+        visibleItems.forEach(item => {
+            if (kind === 'senders') {
+                actionButton(keyboard, item, { type: 'sender-details', folder: item, page });
+            } else if (kind === 'targets') {
+                actionButton(keyboard, item, { type: 'target-details', filename: item, page });
+            } else if (kind === 'results') {
+                actionButton(keyboard, item, { type: 'result-details', filename: item, page });
+            } else {
+                actionButton(keyboard, item, { type: 'scan-target', target: item, page });
+            }
+            keyboard.row();
+            if (kind === 'senders') {
+                actionButton(keyboard, 'Check', { type: 'check-sender', folder: item, page });
+                actionButton(keyboard, 'Remove', {
+                    type: 'confirm',
+                    action: { type: 'delete-sender', folder: item },
+                    returnTo: { type: 'show-senders', page }
+                }).row();
+            } else if (kind === 'targets') {
+                actionButton(keyboard, 'Remove', {
+                    type: 'confirm',
+                    action: { type: 'delete-target', filename: item },
+                    returnTo: { type: 'show-targets', page }
+                }).row();
+            } else if (kind === 'results') {
+                actionButton(keyboard, 'Send file', { type: 'send-result', filename: item });
+                actionButton(keyboard, 'Remove', {
+                    type: 'confirm',
+                    action: { type: 'delete-result', filename: item },
+                    returnTo: { type: 'show-results', page }
+                }).row();
+            }
+        });
+
+        if (kind === 'senders' && items.length) {
+            actionButton(keyboard, 'Check all', { type: 'check-all' }).row();
+            actionButton(keyboard, 'Clean inactive', {
+                type: 'confirm',
+                action: { type: 'clean-senders' },
+                returnTo: { type: 'show-senders', page }
+            }).row();
+        }
+        if (pageCount > 1) {
+            if (page > 0) actionButton(keyboard, '⬅️ Previous', { type: `show-${kind}`, page: page - 1 });
+            if (page + 1 < pageCount) actionButton(keyboard, 'Next ➡️', { type: `show-${kind}`, page: page + 1 });
+            keyboard.row();
+        }
+        addMenuButton(keyboard).row();
+
+        const emptyMessage = kind === 'results'
+            ? 'No results with findings are available yet.'
+            : kind === 'scan'
+                ? 'No target lists found. Send a .txt or .xlsx document to this chat to add one.'
+                : kind === 'targets'
+                    ? 'No target lists found. Send a .txt or .xlsx document to this chat to add one.'
+                    : 'No sender sessions found. Add a sender from the Senders menu.';
+        const text = items.length
+            ? `${config.heading} · page ${page + 1} of ${pageCount}`
+            : `${config.heading}\n\n${emptyMessage}`;
+        return present(ctx, text, keyboard);
+    };
+
+    const showItemDetails = async (ctx, kind, item, page) => {
+        const keyboard = new InlineKeyboard();
+        let text;
+        if (kind === 'sender') {
+            text = `Sender session\n${item}`;
+            actionButton(keyboard, 'Check status', { type: 'check-sender', folder: item, page });
+            actionButton(keyboard, 'Remove sender', {
+                type: 'confirm',
+                action: { type: 'delete-sender', folder: item },
+                returnTo: { type: 'show-senders', page }
+            }).row();
+        } else if (kind === 'target') {
+            text = `Target list\n${item}`;
+            actionButton(keyboard, 'Remove target', {
+                type: 'confirm',
+                action: { type: 'delete-target', filename: item },
+                returnTo: { type: 'show-targets', page }
+            }).row();
+        } else {
+            text = `Scan result\n${item}`;
+            actionButton(keyboard, 'Send result file', { type: 'send-result', filename: item });
+            actionButton(keyboard, 'Remove result', {
+                type: 'confirm',
+                action: { type: 'delete-result', filename: item },
+                returnTo: { type: 'show-results', page }
+            }).row();
+        }
+        actionButton(keyboard, '⬅️ Back to list', { type: `show-${kind === 'sender' ? 'senders' : kind === 'target' ? 'targets' : 'results'}`, page });
+        addMenuButton(keyboard).row();
+        return present(ctx, text, keyboard);
+    };
+
+    const showScanBatchOptions = async (ctx, selection) => {
+        const keyboard = new InlineKeyboard();
+        for (const size of [25, 50, 100]) {
+            actionButton(keyboard, String(size), {
+                type: 'scan-size',
+                target: selection.target,
+                sender: selection.sender,
+                checkpoint: selection.checkpoint,
+                hasCheckpoint: selection.hasCheckpoint,
+                targetPage: selection.targetPage,
+                senderPage: selection.senderPage,
+                batchSize: size
+            });
+        }
+        actionButton(keyboard, 'Custom size', {
+            type: 'scan-custom-size',
+            selection
+        }).row();
+        actionButton(keyboard, '⬅️ Back to senders', {
+            type: 'scan-target',
+            target: selection.target,
+            page: selection.targetPage || 0,
+            senderPage: selection.senderPage || 0
+        });
+        actionButton(keyboard, 'Cancel', { type: 'main-menu' }).row();
+        return present(ctx, 'Choose the number of targets per batch:', keyboard);
+    };
+
+    const startSenderPairing = async (ctx, phoneNumber) => {
+        await api('/api/senders', jsonPost({ phoneNumber }));
+        pendingSenderNumbers.delete(String(ctx.from.id));
+        await showMainMenu(ctx, 'Sender pairing started. Open Status to retrieve the pairing code.');
+    };
+
+    const promptSenderPhone = async ctx => {
+        pendingBatchSizes.delete(String(ctx.from.id));
+        pendingSenderNumbers.set(String(ctx.from.id), Date.now() + ACTION_TTL_MS);
+        const keyboard = new InlineKeyboard();
+        actionButton(keyboard, 'Cancel', { type: 'main-menu' });
+        return present(ctx, 'Send the sender phone number including country code, or cancel to return to the menu.', keyboard);
     };
 
     const sendResults = async (ctx, filename) => {
@@ -85,32 +312,58 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             batchSize: selection.batchSize,
             resume
         }));
-        await ctx.reply(`Scan started for ${selection.target} using ${selection.sender} (${selection.batchSize} targets per batch). Use /status to check progress.`);
-    };
-
-    const requestCheckpointChoice = async (ctx, selection) => {
-        if (!selection.hasCheckpoint) {
-            await startScan(ctx, selection, false);
-            return;
-        }
-        const keyboard = new InlineKeyboard();
-        if (!selection.checkpoint?.invalid) {
-            actionButton(keyboard, 'Resume checkpoint', { type: 'scan-start', selection, resume: true });
-        }
-        actionButton(keyboard, 'Start over', { type: 'scan-start', selection, resume: false });
-        await ctx.reply(
-            selection.checkpoint?.invalid
-                ? 'The checkpoint is invalid. Start a new scan from the beginning?'
-                : `A checkpoint exists at batch ${selection.checkpoint.batchIndex} of ${selection.checkpoint.totalBatches}. Resume or start over?`,
-            { reply_markup: keyboard }
+        await showMainMenu(
+            ctx,
+            `Scan started for ${selection.target} using ${selection.sender} (${selection.batchSize} targets per batch).`
         );
     };
 
-    const askConfirmation = async (ctx, message, action) => {
+    const requestCheckpointChoice = async (ctx, selection) => {
         const keyboard = new InlineKeyboard();
-        actionButton(keyboard, 'Confirm', { type: 'confirm', action });
-        actionButton(keyboard, 'Cancel', { type: 'cancel' });
-        await ctx.reply(message, { reply_markup: keyboard });
+        if (!selection.hasCheckpoint) {
+            actionButton(keyboard, '▶️ Start scan', {
+                type: 'scan-start',
+                selection,
+                resume: false
+            });
+            actionButton(keyboard, '⬅️ Back', {
+                type: 'show-scan-batches',
+                selection
+            }).row();
+            actionButton(keyboard, 'Cancel', { type: 'main-menu' });
+            return present(
+                ctx,
+                `Ready to scan ${selection.target} with ${selection.sender} (${selection.batchSize} targets per batch).`,
+                keyboard
+            );
+        }
+        if (!selection.checkpoint?.invalid) {
+            actionButton(keyboard, '▶️ Resume checkpoint', { type: 'scan-start', selection, resume: true });
+        }
+        actionButton(keyboard, 'Start over', {
+            type: 'scan-start',
+            selection,
+            resume: false
+        });
+        actionButton(keyboard, '⬅️ Back', {
+            type: 'show-scan-batches',
+            selection
+        }).row();
+        actionButton(keyboard, 'Cancel', { type: 'main-menu' });
+        return present(
+            ctx,
+            selection.checkpoint?.invalid
+                ? 'The checkpoint is invalid. Start a new scan from the beginning?'
+                : `A checkpoint exists at batch ${selection.checkpoint.batchIndex} of ${selection.checkpoint.totalBatches}. Resume or start over?`,
+            keyboard
+        );
+    };
+
+    const askConfirmation = async (ctx, message, action, returnTo) => {
+        const keyboard = new InlineKeyboard();
+        actionButton(keyboard, '✅ Confirm', { type: 'confirm', action, returnTo });
+        actionButton(keyboard, 'Cancel', { type: 'cancel', returnTo });
+        return present(ctx, message, keyboard);
     };
 
     const shutdownLocalApplication = async ctx => {
@@ -127,30 +380,64 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
         switch (action.type) {
             case 'check-sender':
                 await api(`${folderPath(action.folder)}/check`, { method: 'POST' });
-                await ctx.reply(`Status check started for ${action.folder}.`);
+                await showMainMenu(ctx, `Status check started for ${action.folder}.`);
                 return;
             case 'delete-sender':
                 await api(`${folderPath(action.folder)}/delete`, jsonPost({ confirm: true }));
-                await ctx.reply(`Sender ${action.folder} was removed.`);
+                if (!action.suppressMenu) await showMainMenu(ctx, `Sender ${action.folder} was removed.`);
                 return;
             case 'delete-target':
                 await api(`${targetPath(action.filename)}/delete`, jsonPost({ confirm: true }));
-                await ctx.reply(`Target list ${action.filename} and its checkpoint were removed.`);
+                if (!action.suppressMenu) await showMainMenu(ctx, `Target list ${action.filename} and its checkpoint were removed.`);
                 return;
             case 'delete-result':
                 await api(`${resultPath(action.filename)}/delete`, jsonPost({ confirm: true }));
-                await ctx.reply(`Result ${action.filename} was removed.`);
+                if (!action.suppressMenu) await showMainMenu(ctx, `Result ${action.filename} was removed.`);
                 return;
             case 'check-all':
                 await api('/api/senders/check-all', { method: 'POST' });
-                await ctx.reply('Sender checks started. Use /status to see the results.');
+                await showMainMenu(ctx, 'Sender checks started. Open Status to see progress.');
                 return;
             case 'clean-senders':
                 await api('/api/senders/clean', jsonPost({ confirm: true }));
-                await ctx.reply('Sender cleanup started. Use /status to see the results.');
+                if (!action.suppressMenu) await showMainMenu(ctx, 'Sender cleanup started. Open Status to see progress.');
                 return;
             case 'send-result':
                 await sendResults(ctx, action.filename);
+                await showMainMenu(ctx, `${action.filename} was sent.`);
+                return;
+            case 'show-status':
+                await showStatus(ctx);
+                return;
+            case 'main-menu':
+                pendingBatchSizes.delete(String(ctx.from.id));
+                pendingSenderNumbers.delete(String(ctx.from.id));
+                await showMainMenu(ctx);
+                return;
+            case 'show-senders':
+                await showCollection(ctx, 'senders', action.page);
+                return;
+            case 'show-targets':
+                await showCollection(ctx, 'targets', action.page);
+                return;
+            case 'show-results':
+                await showCollection(ctx, 'results', action.page);
+                return;
+            case 'show-scan':
+                await showCollection(ctx, 'scan', action.page);
+                return;
+            case 'sender-details':
+                await showItemDetails(ctx, 'sender', action.folder, action.page);
+                return;
+            case 'target-details':
+                await showItemDetails(ctx, 'target', action.filename, action.page);
+                return;
+            case 'result-details':
+                await showItemDetails(ctx, 'result', action.filename, action.page);
+                return;
+            case 'show-scan-batches':
+                pendingBatchSizes.delete(String(ctx.from.id));
+                await showScanBatchOptions(ctx, action.selection);
                 return;
             case 'scan-target': {
                 const [senders, targetData] = await Promise.all([
@@ -158,48 +445,68 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
                     api('/api/targets')
                 ]);
                 if (!senders.senders.length) {
-                    await ctx.reply('No sender sessions are available. Add a sender first with /addsender <phone number>.');
+                    await showMainMenu(ctx, 'No sender sessions are available. Add a sender first from Senders.');
                     return;
                 }
                 const checkpoint = targetData.checkpoints[action.target];
+                const { page, pageCount, items: visibleSenders } = paginateItems(senders.senders, action.senderPage || 0);
                 const keyboard = new InlineKeyboard();
-                for (const sender of senders.senders) {
+                for (const sender of visibleSenders) {
                     actionButton(keyboard, sender, {
                         type: 'scan-sender',
                         target: action.target,
                         sender,
                         checkpoint,
-                        hasCheckpoint: Boolean(checkpoint)
+                        hasCheckpoint: Boolean(checkpoint),
+                        targetPage: action.page || 0,
+                        senderPage: page
                     }).row();
                 }
-                await ctx.reply(`Choose a sender for ${action.target}:`, { reply_markup: keyboard });
+                if (page > 0) {
+                    actionButton(keyboard, '⬅️ Previous', {
+                        type: 'scan-target',
+                        target: action.target,
+                        page: action.page || 0,
+                        senderPage: page - 1
+                    });
+                }
+                if (page + 1 < pageCount) {
+                    actionButton(keyboard, 'Next ➡️', {
+                        type: 'scan-target',
+                        target: action.target,
+                        page: action.page || 0,
+                        senderPage: page + 1
+                    });
+                }
+                if (pageCount > 1) {
+                    keyboard.row();
+                }
+                actionButton(keyboard, '⬅️ Back to targets', {
+                    type: 'show-scan',
+                    page: action.page || 0
+                });
+                actionButton(keyboard, 'Cancel', { type: 'main-menu' }).row();
+                await present(ctx, `Choose a sender for ${action.target}:`, keyboard);
                 return;
             }
             case 'scan-sender': {
-                pendingBatchSizes.set(String(ctx.from.id), {
-                    target: action.target,
-                    sender: action.sender,
-                    checkpoint: action.checkpoint,
-                    hasCheckpoint: action.hasCheckpoint,
-                    expiresAt: Date.now() + ACTION_TTL_MS
-                });
-                const keyboard = new InlineKeyboard();
-                for (const size of [25, 50, 100]) {
-                    actionButton(keyboard, String(size), {
-                        type: 'scan-size',
-                        target: action.target,
-                        sender: action.sender,
-                        checkpoint: action.checkpoint,
-                        hasCheckpoint: action.hasCheckpoint,
-                        batchSize: size
-                    });
-                }
-                actionButton(keyboard, 'Custom size', { type: 'scan-custom-size' });
-                await ctx.reply('Choose the number of targets per batch:', { reply_markup: keyboard });
+                await showScanBatchOptions(ctx, action);
                 return;
             }
             case 'scan-custom-size':
-                await ctx.reply('Send a positive whole number for the batch size.');
+                pendingBatchSizes.set(String(ctx.from.id), {
+                    ...action.selection,
+                    expiresAt: Date.now() + ACTION_TTL_MS
+                });
+                {
+                    const keyboard = new InlineKeyboard();
+                    actionButton(keyboard, '⬅️ Back', {
+                        type: 'show-scan-batches',
+                        selection: action.selection
+                    });
+                    actionButton(keyboard, 'Cancel', { type: 'cancel' }).row();
+                    await present(ctx, 'Send a positive whole number for the batch size.', keyboard);
+                }
                 return;
             case 'scan-size':
                 pendingBatchSizes.delete(String(ctx.from.id));
@@ -208,6 +515,8 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
                     sender: action.sender,
                     checkpoint: action.checkpoint,
                     hasCheckpoint: action.hasCheckpoint,
+                    targetPage: action.targetPage,
+                    senderPage: action.senderPage,
                     batchSize: action.batchSize
                 });
                 return;
@@ -216,10 +525,17 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
                 await startScan(ctx, action.selection, action.resume);
                 return;
             case 'confirm':
-                await performAction(ctx, action.action);
+                await performAction(ctx, { ...action.action, suppressMenu: true });
+                if (action.returnTo) await performAction(ctx, action.returnTo);
                 return;
             case 'cancel':
-                await ctx.reply('Action cancelled.');
+                pendingBatchSizes.delete(String(ctx.from.id));
+                pendingSenderNumbers.delete(String(ctx.from.id));
+                if (action.returnTo) await performAction(ctx, action.returnTo);
+                else await showMainMenu(ctx, 'Action cancelled.');
+                return;
+            case 'add-sender':
+                await promptSenderPhone(ctx);
                 return;
             case 'shutdown':
                 await shutdownLocalApplication(ctx);
@@ -237,148 +553,49 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
         await next();
     });
 
-    bot.callbackQuery(/^a:([a-f0-9]+)$/, async ctx => {
-        const key = ctx.match[1];
-        const action = actions.get(key);
-        actions.delete(key);
+    bot.callbackQuery(/^a:/, async ctx => {
+        const action = actions.consume(ctx.callbackQuery.data);
         await ctx.answerCallbackQuery();
-        if (!action || action.expiresAt <= Date.now()) {
-            await ctx.reply('This button has expired. Please run the command again.');
+        if (!action) {
+            await showMainMenu(ctx, 'That button expired. Please choose an option again.');
             return;
         }
         try {
-            if (action.type === 'confirm') await performAction(ctx, action.action);
-            else if (action.type === 'cancel') await ctx.reply('Action cancelled.');
-            else if (action.type === 'shutdown') {
-                await shutdownLocalApplication(ctx);
-            } else await performAction(ctx, action);
+            await performAction(ctx, action);
         } catch (error) {
-            await ctx.reply(error.message || 'The operation could not be completed.');
+            await showMainMenu(ctx, error.message || 'The operation could not be completed.');
         }
     });
     bot.callbackQuery('noop', async ctx => ctx.answerCallbackQuery());
 
     bot.command(['start', 'help'], async ctx => {
-        await ctx.reply([
-            'cekbio local control',
-            '',
-            '/status — show scan and sender operation status',
-            '/senders — list, check, or remove sender sessions',
-            '/targets — list or remove target lists',
-            '/results — send or remove generated result files',
-            '/scan — choose a target, sender, and batch size',
-            '/addsender <phone> — start sender pairing',
-            '/checkall — check all sender sessions',
-            '/clean — confirm removal of inactive senders',
-            '/shutdown — confirm local application shutdown',
-            '',
-            'You can send a .txt or .xlsx document here to add a target list. Only your private chat is authorized.'
-        ].join('\n'));
+        await showMainMenu(ctx, 'Choose an action below. You can also send a .txt or .xlsx file to add a target list.');
     });
 
-    bot.command('status', async ctx => {
-        const { scan, sender } = await api('/api/status');
-        const lines = [`Scan: ${scan?.status || 'idle'}`];
-        if (scan) {
-            lines.push(`Target: ${scan.targetFile}`);
-            lines.push(`Sender: ${scan.sessionFolder}`);
-            lines.push(`Progress: ${scan.completedTargets} / ${scan.totalTargets} targets`);
-        }
-        lines.push(`Sender operation: ${sender?.status || 'idle'}`);
-        if (sender?.sessionFolder) lines.push(`Session: ${sender.sessionFolder}`);
-        if (sender?.pairingCode) lines.push(`Pairing code: ${sender.pairingCode}`);
-        if (sender?.error) lines.push(`Sender error: ${sender.error}`);
-        if (scan?.error) lines.push(`Scan error: ${scan.error}`);
-        await ctx.reply(lines.join('\n'));
-    });
-
-    bot.command('senders', async ctx => {
-        const { senders } = await api('/api/senders');
-        if (!senders.length) {
-            await ctx.reply('No sender sessions found.');
-            return;
-        }
-        const keyboard = new InlineKeyboard();
-        for (const [index, folder] of senders.entries()) {
-            keyboard.text(`${index + 1}. ${folder}`, 'noop').row();
-            actionButton(keyboard, 'Check', { type: 'check-sender', folder });
-            actionButton(keyboard, 'Remove', {
-                type: 'confirm',
-                action: { type: 'delete-sender', folder }
-            }).row();
-        }
-        actionButton(keyboard, 'Check all senders', { type: 'check-all' }).row();
-        await ctx.reply('Sender sessions:', { reply_markup: keyboard });
-    });
-
-    bot.command('targets', async ctx => {
-        const { targets } = await api('/api/targets');
-        if (!targets.length) {
-            await ctx.reply('No target lists found. Send a .txt or .xlsx document to upload one.');
-            return;
-        }
-        const keyboard = new InlineKeyboard();
-        for (const [index, filename] of targets.entries()) {
-            keyboard.text(`${index + 1}. ${filename}`.slice(0, 60), 'noop').row();
-            actionButton(keyboard, 'Remove', {
-                type: 'confirm',
-                action: { type: 'delete-target', filename }
-            }).row();
-        }
-        await ctx.reply('Target lists:', { reply_markup: keyboard });
-    });
-
-    bot.command('results', async ctx => {
-        const { results } = await api('/api/results');
-        if (!results.length) {
-            await ctx.reply('No results with findings are available.');
-            return;
-        }
-        const keyboard = new InlineKeyboard();
-        for (const [index, filename] of results.entries()) {
-            if (!isResultFilename(filename)) continue;
-            keyboard.text(`${index + 1}. ${filename}`.slice(0, 60), 'noop').row();
-            actionButton(keyboard, `Send #${index + 1}`, { type: 'send-result', filename });
-            actionButton(keyboard, `Remove #${index + 1}`, {
-                type: 'confirm',
-                action: { type: 'delete-result', filename }
-            }).row();
-        }
-        await ctx.reply('Generated results (only result_*.txt files can be sent):', { reply_markup: keyboard });
-    });
-
-    bot.command('scan', async ctx => {
-        const { targets } = await api('/api/targets');
-        if (!targets.length) {
-            await ctx.reply('No target lists found. Send a .txt or .xlsx document to upload one.');
-            return;
-        }
-        const keyboard = new InlineKeyboard();
-        for (const filename of targets) {
-            actionButton(keyboard, filename.slice(0, 50), { type: 'scan-target', target: filename }).row();
-        }
-        await ctx.reply('Choose a target list:', { reply_markup: keyboard });
-    });
+    bot.command('status', showStatus);
+    bot.command('senders', ctx => showCollection(ctx, 'senders'));
+    bot.command('targets', ctx => showCollection(ctx, 'targets'));
+    bot.command('results', ctx => showCollection(ctx, 'results'));
+    bot.command('scan', ctx => showCollection(ctx, 'scan'));
 
     bot.command('addsender', async ctx => {
         const phoneNumber = String(ctx.match || '').trim();
         if (!phoneNumber || phoneNumber.replace(/\D/g, '').length < 6) {
-            await ctx.reply('Usage: /addsender <phone number>');
+            await promptSenderPhone(ctx);
             return;
         }
-        await api('/api/senders', jsonPost({ phoneNumber }));
-        await ctx.reply('Sender pairing started. Use /status to retrieve the pairing code in this private chat.');
+        await startSenderPairing(ctx, phoneNumber);
     });
 
     bot.command('checkall', async ctx => {
         await api('/api/senders/check-all', { method: 'POST' });
-        await ctx.reply('Sender checks started. Use /status to see the results.');
+        await showMainMenu(ctx, 'Sender checks started. Open Status to see progress.');
     });
 
     bot.command('clean', async ctx => {
         await askConfirmation(ctx, 'Check all senders and remove sessions that are inactive or logged out?', {
             type: 'clean-senders'
-        });
+        }, { type: 'show-senders', page: 0 });
     });
 
     bot.command('shutdown', async ctx => {
@@ -389,18 +606,36 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
 
     bot.on('message:text', async (ctx, next) => {
         if (ctx.message.text.startsWith('/')) return next();
-        const pending = pendingBatchSizes.get(String(ctx.from.id));
+        const ownerKey = String(ctx.from.id);
+        const senderExpiresAt = pendingSenderNumbers.get(ownerKey);
+        if (senderExpiresAt) {
+            if (senderExpiresAt <= Date.now()) {
+                pendingSenderNumbers.delete(ownerKey);
+                await showMainMenu(ctx, 'Add-sender request expired. Choose Add sender to try again.');
+                return;
+            }
+            const phoneNumber = ctx.message.text.trim();
+            if (phoneNumber.replace(/\D/g, '').length < 6) {
+                await ctx.reply('Enter a valid phone number including country code, or use Cancel.');
+                return;
+            }
+            await startSenderPairing(ctx, phoneNumber);
+            return;
+        }
+        const pending = pendingBatchSizes.get(ownerKey);
         if (!pending) return next();
-        pendingBatchSizes.delete(String(ctx.from.id));
         if (pending.expiresAt <= Date.now()) {
-            await ctx.reply('Batch size selection expired. Run /scan again.');
+            pendingBatchSizes.delete(ownerKey);
+            await showMainMenu(ctx, 'Batch-size request expired. Choose Scan to try again.');
             return;
         }
-        const batchSize = Number(ctx.message.text.trim());
-        if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
-            await ctx.reply('Batch size must be a positive whole number. Run /scan again.');
+        const batchText = ctx.message.text.trim();
+        const batchSize = Number(batchText);
+        if (!/^\d+$/.test(batchText) || !Number.isSafeInteger(batchSize) || batchSize < 1) {
+            await ctx.reply('Batch size must be a positive whole number. Try again or use Cancel.');
             return;
         }
+        pendingBatchSizes.delete(ownerKey);
         await requestCheckpointChoice(ctx, { ...pending, batchSize });
     });
 
@@ -454,6 +689,8 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
 
     await bot.init();
     await bot.api.setMyCommands([
+        { command: 'start', description: 'Open the button menu' },
+        { command: 'help', description: 'Show the button menu and help' },
         { command: 'status', description: 'Show scan and sender status' },
         { command: 'senders', description: 'List and manage sender sessions' },
         { command: 'targets', description: 'List and manage target lists' },
@@ -478,8 +715,10 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
 };
 
 module.exports = {
+    createActionRegistry,
     isAuthorizedUpdate,
     isResultFilename,
+    paginateItems,
     startTelegramBot,
     validateTelegramConfig
 };
