@@ -14,6 +14,9 @@ const {
     formatSenderSessionsText,
     formatTargetButtonLabel,
     formatMainMenuText,
+    getActionButtonStyle,
+    getSenderButtonStyle,
+    getTargetButtonStyle,
     getTargetDisplayName,
     getVisiblePairingCode,
     isAuthorizedUpdate,
@@ -99,6 +102,7 @@ test('pairing-code copy button copies only the code', () => {
 
     assert.equal(copyButton.text, '📋 Copy code');
     assert.deepEqual(copyButton.copy_text, { text: '581204' });
+    assert.equal(copyButton.style, 'primary');
 });
 
 test('target buttons show friendly names and a single active target can be replaced', () => {
@@ -107,8 +111,9 @@ test('target buttons show friendly names and a single active target can be repla
     const selection = createActiveTargetSelection();
 
     assert.equal(getTargetDisplayName(firstTarget), 'business_custom-list');
-    assert.equal(formatTargetButtonLabel(firstTarget, false), '◯ business_custom-list');
-    assert.equal(formatTargetButtonLabel(firstTarget, true), '✅ business_custom-list');
+    assert.equal(formatTargetButtonLabel(firstTarget), 'business_custom-list');
+    assert.equal(getTargetButtonStyle(false), 'danger');
+    assert.equal(getTargetButtonStyle(true), 'success');
     assert.equal(selection.get(), null);
     assert.equal(selection.select(firstTarget, [firstTarget, secondTarget]), firstTarget);
     assert.equal(selection.select(secondTarget, [firstTarget, secondTarget]), secondTarget);
@@ -118,10 +123,27 @@ test('target buttons show friendly names and a single active target can be repla
 });
 
 test('sender labels show connected, checking, and unavailable states clearly', () => {
-    assert.equal(formatSenderButtonLabel('session_1', 'alive'), '🟢 session_1');
-    assert.equal(formatSenderButtonLabel('session_2', 'scanning'), '🟢 session_2');
-    assert.equal(formatSenderButtonLabel('session_3', 'checking'), '🟡 session_3');
-    assert.equal(formatSenderButtonLabel('session_4', 'timeout/dead'), '⚪ session_4');
+    assert.equal(formatSenderButtonLabel('session_1'), 'session_1');
+    assert.equal(formatSenderButtonLabel('session_2'), 'session_2');
+    assert.equal(formatSenderButtonLabel('session_3'), 'session_3');
+    assert.equal(formatSenderButtonLabel('session_4'), 'session_4');
+    assert.equal(getSenderButtonStyle('alive'), 'success');
+    assert.equal(getSenderButtonStyle('active'), 'success');
+    assert.equal(getSenderButtonStyle('scanning'), 'success');
+    assert.equal(getSenderButtonStyle('checking'), 'primary');
+    assert.equal(getSenderButtonStyle('unknown'), 'primary');
+    assert.equal(getSenderButtonStyle('timeout/dead'), 'danger');
+    assert.equal(getSenderButtonStyle('banned/logged_out'), 'danger');
+    assert.equal(getSenderButtonStyle('error'), 'danger');
+});
+
+test('ordinary Telegram actions are blue and destructive or cancel actions are red', () => {
+    assert.equal(getActionButtonStyle('Status', { type: 'show-status' }), 'primary');
+    assert.equal(getActionButtonStyle('Confirm', { type: 'confirm' }), 'primary');
+    assert.equal(getActionButtonStyle('Shutdown', { type: 'shutdown' }), 'primary');
+    assert.equal(getActionButtonStyle('Cancel', { type: 'cancel' }), 'danger');
+    assert.equal(getActionButtonStyle('Remove', { type: 'delete-target' }), 'danger');
+    assert.equal(getActionButtonStyle('Remove result', { type: 'delete-result' }), 'danger');
 });
 
 test('Sender sessions keeps the same heading and status legend across refreshes', () => {
@@ -129,29 +151,42 @@ test('Sender sessions keeps the same heading and status legend across refreshes'
     const refreshed = formatSenderSessionsText(0, 1, 1);
 
     assert.equal(initial, refreshed);
-    assert.equal(initial, '👤 Sender sessions\n\n🟢 Active · 🟡 Checking · ⚪ Inactive');
+    assert.equal(initial, '👤 Sender sessions\n\nGreen = Active · Blue = Checking · Red = Inactive');
     assert.match(formatSenderSessionsText(1, 2, 7), /Page 2 of 2/);
     assert.match(formatSenderSessionsText(0, 1, 0), /No sender sessions found/);
 });
 
 test('Sender sessions keyboard keeps Add sender, sender actions, pagination, and Main menu ordered', () => {
     const keyboard = buildSenderSessionsKeyboard({
-        senders: ['session_2'],
-        statuses: new Map([['session_2', { status: 'checking' }]]),
+        senders: ['session_active', 'session_checking', 'session_inactive'],
+        statuses: new Map([
+            ['session_active', { status: 'alive' }],
+            ['session_checking', { status: 'checking' }],
+            ['session_inactive', { status: 'timeout/dead' }]
+        ]),
         page: 0,
-        pageCount: 2,
+        pageCount: 1,
         callbackData: payload => JSON.stringify(payload)
     });
     const rows = keyboard.inline_keyboard;
     const labels = rows.map(row => row[0].text);
 
-    assert.deepEqual(labels, ['➕ Add sender', '🟡 session_2', 'Remove', 'Next ➡️', '🏠 Main menu']);
+    assert.deepEqual(labels, [
+        '➕ Add sender', 'session_active', 'Remove',
+        'session_checking', 'Remove',
+        'session_inactive', 'Remove',
+        '🏠 Main menu'
+    ]);
+    assert.deepEqual(rows.map(row => row[0].style), [
+        'primary', 'success', 'danger', 'primary', 'danger', 'danger', 'danger', 'primary'
+    ]);
     assert.deepEqual(JSON.parse(rows[1][0].callback_data), { type: 'refresh-senders', page: 0 });
-    assert.deepEqual(JSON.parse(rows[2][0].callback_data), {
+    assert.deepEqual(JSON.parse(rows[4][0].callback_data), {
         type: 'confirm',
-        action: { type: 'delete-sender', folder: 'session_2' },
+        action: { type: 'delete-sender', folder: 'session_checking' },
         returnTo: { type: 'show-senders', page: 0 }
     });
+    assert.ok(labels.every(label => !/[✅◯🟢🟡⚪]/u.test(label)));
 });
 
 test('Telegram exposes only /start and /shutdown slash commands', () => {
@@ -224,12 +259,16 @@ test('start menu shows Targets heading, upload action, and one full-width button
 
     assert.match(text, /\nTargets\n/);
     assert.ok(labels.includes('⬆️ Upload Targets'));
-    assert.ok(labels.includes('◯ business_one'));
-    assert.ok(labels.includes('✅ personal_two'));
+    assert.ok(labels.includes('business_one'));
+    assert.ok(labels.includes('personal_two'));
     assert.equal(labels.at(-1), '⏻ Shutdown');
     assert.deepEqual(JSON.parse(rows.at(-1)[0].callback_data), { type: 'shutdown' });
+    assert.deepEqual(rows.flat().map(button => button.style), [
+        'primary', 'primary', 'primary', 'primary', 'primary', 'danger', 'success', 'primary'
+    ]);
     assert.deepEqual(rows.find(row => row[0].text === '⬆️ Upload Targets').map(button => button.text), ['⬆️ Upload Targets']);
-    assert.deepEqual(rows.find(row => row[0].text === '✅ personal_two').map(button => button.text), ['✅ personal_two']);
+    assert.deepEqual(rows.find(row => row[0].text === 'personal_two').map(button => button.text), ['personal_two']);
+    assert.ok(labels.every(label => !/[✅◯🟢🟡⚪]/u.test(label)));
     assert.equal(labels.includes('📄 Targets'), false);
 
     const pagedTargets = Array.from({ length: 7 }, (_, index) => `target_${index}.txt`);

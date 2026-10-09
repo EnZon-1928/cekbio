@@ -8,6 +8,11 @@ const ACTION_TTL_MS = 10 * 60 * 1000;
 const LIST_PAGE_SIZE = 6;
 const PAIRING_REFRESH_INTERVAL_MS = 500;
 const PAIRING_REFRESH_MAX_DURATION_MS = 185000;
+const BUTTON_STYLE = Object.freeze({
+    primary: 'primary',
+    success: 'success',
+    danger: 'danger'
+});
 const TELEGRAM_COMMANDS = Object.freeze([
     { command: 'start', description: 'Open the button menu' },
     { command: 'shutdown', description: 'Stop the local application' }
@@ -37,22 +42,27 @@ const getTargetDisplayName = filename => filename
     .replace(/^target_/, '')
     .replace(/\.txt$/i, '');
 
-const formatTargetButtonLabel = (filename, isActive) =>
-    `${isActive ? '✅' : '◯'} ${getTargetDisplayName(filename)}`;
+const formatTargetButtonLabel = filename => getTargetDisplayName(filename);
 
-const formatSenderButtonLabel = (folder, status) => {
-    const indicator = ['alive', 'active', 'scanning'].includes(status)
-        ? '🟢'
-        : status === 'checking'
-            ? '🟡'
-            : '⚪';
-    return `${indicator} ${folder}`;
+const formatSenderButtonLabel = folder => folder;
+
+const getSenderButtonStyle = status => {
+    if (['alive', 'active', 'scanning'].includes(status)) return BUTTON_STYLE.success;
+    if (status === 'checking' || status === 'unknown' || status == null) return BUTTON_STYLE.primary;
+    return BUTTON_STYLE.danger;
 };
+
+const getTargetButtonStyle = isSelected => isSelected ? BUTTON_STYLE.success : BUTTON_STYLE.danger;
+
+const getActionButtonStyle = (label, payload) =>
+    label === 'Remove' || label.startsWith('Remove ') || label === 'Cancel'
+        ? BUTTON_STYLE.danger
+        : BUTTON_STYLE.primary;
 
 const formatSenderSessionsText = (page, pageCount, senderCount) => [
     '👤 Sender sessions',
     '',
-    '🟢 Active · 🟡 Checking · ⚪ Inactive',
+    'Green = Active · Blue = Checking · Red = Inactive',
     ...(pageCount > 1 ? [`Page ${page + 1} of ${pageCount}`] : []),
     ...(senderCount ? [] : ['', 'No sender sessions found. Add a sender from the Senders menu.'])
 ].join('\n');
@@ -129,7 +139,10 @@ const createActiveTargetSelection = () => {
 };
 
 const addPairingCodeCopyButton = (keyboard, pairingCode) => {
-    keyboard.copyText('📋 Copy code', pairingCode).row();
+    keyboard.copyText(
+        { text: '📋 Copy code', style: BUTTON_STYLE.primary },
+        pairingCode
+    ).row();
     return keyboard;
 };
 
@@ -148,8 +161,11 @@ const getVisiblePairingCode = sender =>
 const buildMainMenuKeyboard = ({ targets, activeTarget, page, callbackData }) => {
     const keyboard = new InlineKeyboard();
     const { page: currentPage, pageCount, items } = paginateItems(targets, page);
-    const addButton = (label, payload) =>
-        keyboard.text([...String(label)].slice(0, 60).join(''), callbackData(payload));
+    const addButton = (label, payload, style = BUTTON_STYLE.primary) =>
+        keyboard.text(
+            { text: [...String(label)].slice(0, 60).join(''), style },
+            callbackData(payload)
+        );
 
     addButton('📊 Status', { type: 'show-status' });
     addButton('👤 Senders', { type: 'show-senders', page: 0 }).row();
@@ -159,8 +175,9 @@ const buildMainMenuKeyboard = ({ targets, activeTarget, page, callbackData }) =>
 
     for (const target of items) {
         addButton(
-            formatTargetButtonLabel(target, target === activeTarget),
-            { type: 'select-target', filename: target, page: currentPage, returnToMain: true }
+            formatTargetButtonLabel(target),
+            { type: 'select-target', filename: target, page: currentPage, returnToMain: true },
+            getTargetButtonStyle(target === activeTarget)
         ).row();
     }
 
@@ -179,18 +196,20 @@ const buildMainMenuKeyboard = ({ targets, activeTarget, page, callbackData }) =>
 
 const buildSenderSessionsKeyboard = ({ senders, statuses, page, pageCount, callbackData }) => {
     const keyboard = new InlineKeyboard();
-    const addButton = (label, payload) => keyboard.text(label, callbackData(payload));
+    const addButton = (label, payload, style = BUTTON_STYLE.primary) =>
+        keyboard.text({ text: label, style }, callbackData(payload));
     addButton('➕ Add sender', { type: 'add-sender' }).row();
     for (const folder of senders) {
-        addButton(formatSenderButtonLabel(folder, statuses.get(folder)?.status), {
+        const status = statuses.get(folder)?.status;
+        addButton(formatSenderButtonLabel(folder), {
             type: 'refresh-senders',
             page
-        }).row();
+        }, getSenderButtonStyle(status)).row();
         addButton('Remove', {
             type: 'confirm',
             action: { type: 'delete-sender', folder },
             returnTo: { type: 'show-senders', page }
-        }).row();
+        }, BUTTON_STYLE.danger).row();
     }
     if (pageCount > 1) {
         if (page > 0) addButton('⬅️ Previous', { type: 'show-senders', page: page - 1 });
@@ -284,7 +303,13 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     };
 
     const actionButton = (keyboard, label, payload) => {
-        keyboard.text([...String(label)].slice(0, 60).join(''), registerAction(payload));
+        keyboard.text(
+            {
+                text: [...String(label)].slice(0, 60).join(''),
+                style: getActionButtonStyle(String(label), payload)
+            },
+            registerAction(payload)
+        );
         return keyboard;
     };
 
@@ -1123,6 +1148,9 @@ module.exports = {
     createActionRegistry,
     createActiveTargetSelection,
     formatSenderButtonLabel,
+    getActionButtonStyle,
+    getSenderButtonStyle,
+    getTargetButtonStyle,
     formatSenderSessionsText,
     formatScanProgress,
     formatTargetButtonLabel,
@@ -1137,5 +1165,6 @@ module.exports = {
     editShutdownNotice,
     startTelegramBot,
     TELEGRAM_COMMANDS,
+    BUTTON_STYLE,
     validateTelegramConfig
 };
