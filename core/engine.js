@@ -46,6 +46,7 @@ const resetState = (isResume = false, cleanName = '') => {
     state.multiSenderScan = false;
     state.completedBatchIndices = [];
     state.scanBatchSize = null;
+    state.workerProgress = {};
 };
 
 const createScanWorker = async (sessionFolder, onWorkerStatus) => {
@@ -303,6 +304,7 @@ const startEngine = async (returnToMenu, webOptions = null) => {
                         Number.isSafeInteger(index) && index >= 0 && index < state.batches.length)
                     : Array.from({ length: Math.min(state.batchIndex, state.batches.length) }, (_, index) => index)
                 : [];
+            state.workerProgress = {};
             state.batchIndex = 0;
             closePrompt();
             const result = await runMultiSenderScan(
@@ -365,6 +367,7 @@ const startEngine = async (returnToMenu, webOptions = null) => {
                 ? checkpointTracker.completedBatchIndices.filter(index =>
                     Number.isSafeInteger(index) && index >= 0 && index < state.batches.length)
                 : Array.from({ length: Math.min(state.batchIndex, state.batches.length) }, (_, index) => index);
+            state.workerProgress = {};
             state.batchIndex = 0;
             closePrompt();
             const result = await runMultiSenderScan(

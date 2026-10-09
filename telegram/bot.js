@@ -39,6 +39,56 @@ const formatSenderButtonLabel = (folder, status) => {
     return `${indicator} ${folder}`;
 };
 
+const formatScanProgress = scan => {
+    if (!scan) return '🔎 Scan progress\n\nNo scan information is available.';
+    const totalTargets = scan.totalTargets || 0;
+    const completedTargets = Math.min(scan.completedTargets || 0, totalTargets);
+    const activeTargets = (scan.activeBatchProgress || []).reduce(
+        (total, progress) => total + Math.min(progress.processedTargets || 0, progress.totalTargets || 0),
+        0
+    );
+    const displayedTargets = Math.min(completedTargets + activeTargets, totalTargets);
+    const percentage = totalTargets ? Math.floor((displayedTargets / totalTargets) * 100) : 0;
+    const filled = Math.floor(percentage / 10);
+    const progressBar = `${'█'.repeat(filled)}${'░'.repeat(10 - filled)}`;
+    const lines = [
+        '🔎 Scan progress',
+        '',
+        `Target: ${scan.targetFile}`,
+        `${progressBar} ${percentage}%`,
+        `Targets confirmed: ${completedTargets} / ${totalTargets}`,
+        ...(activeTargets
+            ? [`Currently processing: ${activeTargets} / ${Math.max(totalTargets - completedTargets, 0)}`]
+            : []),
+        `Batches: ${scan.completedBatches || 0} / ${scan.totalBatches || 0}`,
+        `Status: ${scan.status || 'starting'}`
+    ];
+
+    if (scan.status === 'starting') lines.push('', 'Checking and preparing sender sessions…');
+    for (const progress of scan.activeBatchProgress || []) {
+        const batchProgress = `${progress.processedTargets || 0} / ${progress.totalTargets || 0}`;
+        lines.push(
+            `${progress.folder}: batch ${(progress.batchIndex || 0) + 1}/${progress.totalBatches} · ${batchProgress} targets`
+        );
+        if (progress.phase && progress.phase !== 'batch complete') {
+            lines.push(`  ${progress.phase}…`);
+        }
+    }
+    if (scan.senderStatuses) {
+        const activeSenders = Object.values(scan.senderStatuses)
+            .filter(sender => ['active', 'scanning'].includes(sender.status)).length;
+        lines.push(`Active senders: ${activeSenders} / ${scan.sessionFolders?.length || 0}`);
+        const inactive = Object.entries(scan.senderStatuses)
+            .filter(([, sender]) => sender.status === 'inactive')
+            .map(([folder]) => folder);
+        if (inactive.length) lines.push(`Excluded: ${inactive.slice(0, 5).join(', ')}`);
+    }
+    if (scan.status === 'paused') lines.push('', 'Scan paused. Progress is saved; resume it from Scan.');
+    if (scan.status === 'completed') lines.push('', 'Scan completed successfully.');
+    if (scan.status === 'failed' && scan.error) lines.push('', `Error: ${scan.error}`);
+    return lines.join('\n');
+};
+
 const createActiveTargetSelection = () => {
     let activeTarget = null;
     return {
@@ -202,6 +252,8 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     const senderViewRefreshes = new Map();
     const senderViewTokens = new Map();
     const senderHealthErrors = new Set();
+    const scanProgressRefreshes = new Map();
+    const scanProgressErrors = new Set();
 
     const registerAction = (payload) => {
         return actions.create(payload);
@@ -217,6 +269,14 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
         if (refresh) clearTimeout(refresh.timer);
         senderViewRefreshes.delete(chatId);
         senderViewTokens.delete(chatId);
+    };
+
+    const clearScanProgressRefresh = chatId => {
+        const key = String(chatId);
+        const refresh = scanProgressRefreshes.get(key);
+        if (refresh) clearTimeout(refresh.timer);
+        scanProgressRefreshes.delete(key);
+        scanProgressErrors.delete(key);
     };
 
     const createSenderListKeyboard = (senders, statuses, page) => {
@@ -313,6 +373,77 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
         actionButton(keyboard, '↻ Refresh', { type: 'show-status' });
         addMenuButton(keyboard).row();
         return { text: lines.join('\n'), keyboard };
+    };
+
+    const scanProgressKeyboard = () => {
+        const keyboard = new InlineKeyboard();
+        actionButton(keyboard, '↻ Refresh', { type: 'scan-progress-refresh' });
+        addMenuButton(keyboard).row();
+        return keyboard;
+    };
+
+    const scheduleScanProgressRefresh = (chatId, messageId, token, lastText) => {
+        const key = String(chatId);
+        const refresh = { token, lastText, timer: null };
+        refresh.timer = setTimeout(async () => {
+            if (scanProgressRefreshes.get(key)?.token !== token) return;
+            try {
+                const { scan } = await api('/api/status');
+                if (scanProgressRefreshes.get(key)?.token !== token) return;
+                if (!scan) {
+                    scanProgressRefreshes.delete(key);
+                    return;
+                }
+                const text = formatScanProgress(scan);
+                if (text !== refresh.lastText) {
+                    await bot.api.editMessageText(chatId, messageId, text, {
+                        reply_markup: scanProgressKeyboard()
+                    });
+                    refresh.lastText = text;
+                }
+                scanProgressErrors.delete(key);
+                if (['starting', 'running'].includes(scan.status)) {
+                    scheduleScanProgressRefresh(chatId, messageId, token, refresh.lastText);
+                } else {
+                    scanProgressRefreshes.delete(key);
+                }
+            } catch (error) {
+                if (scanProgressRefreshes.get(key)?.token !== token) return;
+                if (!scanProgressErrors.has(key)) {
+                    scanProgressErrors.add(key);
+                    console.error('Telegram scan progress refresh failed:', error.message);
+                }
+                scheduleScanProgressRefresh(chatId, messageId, token, refresh.lastText);
+            }
+        }, 2000);
+        refresh.timer.unref?.();
+        scanProgressRefreshes.set(key, refresh);
+    };
+
+    const showScanProgress = async (ctx, scan) => {
+        clearScanProgressRefresh(ctx.chat.id);
+        const text = formatScanProgress(scan);
+        const result = await present(ctx, text, scanProgressKeyboard());
+        const messageId = ctx.callbackQuery?.message?.message_id || result?.message_id;
+        if (messageId && ['starting', 'running'].includes(scan?.status)) {
+            scheduleScanProgressRefresh(
+                ctx.chat.id,
+                messageId,
+                crypto.randomBytes(6).toString('hex'),
+                text
+            );
+        }
+        return result;
+    };
+
+    const refreshScanProgress = async ctx => {
+        const { scan } = await api('/api/status');
+        if (!scan) {
+            clearScanProgressRefresh(ctx.chat.id);
+            await showMainMenu(ctx, 'No scan is currently available.');
+            return;
+        }
+        await showScanProgress(ctx, scan);
     };
 
     const schedulePairingRefresh = (chatId, messageId, expiresAt, preserveErrors = false) => {
@@ -607,10 +738,12 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             batchSize: selection.batchSize,
             resume
         }));
-        await showMainMenu(
-            ctx,
-            `Scan started for ${selection.target} using all active senders (${selection.batchSize} targets per batch).`
-        );
+        const { scan } = await api('/api/status');
+        await showScanProgress(ctx, scan || {
+            status: 'starting',
+            targetFile: selection.target,
+            sessionFolders: senders
+        });
     };
 
     const requestCheckpointChoice = async (ctx, selection) => {
@@ -692,6 +825,9 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
                 return;
             case 'show-status':
                 await showStatus(ctx);
+                return;
+            case 'scan-progress-refresh':
+                await refreshScanProgress(ctx);
                 return;
             case 'main-menu':
                 pendingBatchSizes.delete(String(ctx.from.id));
@@ -822,6 +958,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             if (ctx.callbackQuery) await ctx.answerCallbackQuery();
             return;
         }
+        clearScanProgressRefresh(ctx.chat?.id);
         try {
             await api('/api/senders/health');
             senderHealthErrors.delete(String(ctx.chat?.id));
@@ -990,6 +1127,9 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             for (const refresh of senderViewRefreshes.values()) clearTimeout(refresh.timer);
             senderViewRefreshes.clear();
             senderViewTokens.clear();
+            for (const refresh of scanProgressRefreshes.values()) clearTimeout(refresh.timer);
+            scanProgressRefreshes.clear();
+            scanProgressErrors.clear();
             return bot.stop();
         },
         polling
@@ -1002,6 +1142,7 @@ module.exports = {
     createActionRegistry,
     createActiveTargetSelection,
     formatSenderButtonLabel,
+    formatScanProgress,
     formatTargetButtonLabel,
     formatMainMenuText,
     getTargetDisplayName,

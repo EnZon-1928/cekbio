@@ -11,6 +11,7 @@ const state = {
     multiSenderScan: false,
     completedBatchIndices: [],
     scanBatchSize: null,
+    workerProgress: {},
     targetBusiness: [],
     targetPersonal: [],
     targetUnregistered: [],

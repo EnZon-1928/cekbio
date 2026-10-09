@@ -99,8 +99,18 @@ const runScannerPool = async (workers, { onWorkerStatus = () => {}, persist = sa
                 targetUnregistered: [],
                 statistics: createEmptyStatistics()
             };
+            const updateProgress = progress => {
+                sharedState.workerProgress[worker.folder] = {
+                    batchIndex,
+                    totalBatches: sharedState.batches.length,
+                    totalTargets: batchState.batches[0].length,
+                    ...progress
+                };
+            };
+            batchState.onProgress = updateProgress;
 
             setWorkerStatus(worker.folder, 'scanning');
+            updateProgress({ processedTargets: 0, phase: 'checking numbers' });
             let failureSignal;
             let batchError;
             try {
@@ -134,11 +144,13 @@ const runScannerPool = async (workers, { onWorkerStatus = () => {}, persist = sa
                 }
                 activeWorkers.delete(worker);
                 setWorkerStatus(worker.folder, 'inactive', batchError.message);
+                delete sharedState.workerProgress[worker.folder];
                 pending.unshift(batchIndex);
                 continue;
             }
 
             commitBatchState(batchState);
+            delete sharedState.workerProgress[worker.folder];
             completed.add(batchIndex);
             sharedState.completedBatchIndices = [...completed].sort((a, b) => a - b);
             sharedState.batchIndex = 0;
@@ -161,6 +173,7 @@ const runScannerPool = async (workers, { onWorkerStatus = () => {}, persist = sa
         await Promise.all([...activeWorkers].map(workerLoop));
     }
     if (pending.length > 0) {
+        sharedState.workerProgress = {};
         sharedState.multiSenderScan = true;
         sharedState.completedBatchIndices = [...completed].sort((a, b) => a - b);
         sharedState.batchIndex = 0;
@@ -174,6 +187,7 @@ const runScannerPool = async (workers, { onWorkerStatus = () => {}, persist = sa
     sharedState.batchIndex = sharedState.batches.length;
     sharedState.completedBatchIndices = [];
     sharedState.multiSenderScan = false;
+    sharedState.workerProgress = {};
     sortResultsByInputOrder();
     persist();
     minimalLog('done', `[report] business: ${sharedState.targetBusiness.length} | personal: ${sharedState.statistics.personal} | unregistered: ${sharedState.statistics.unregistered}++`);
@@ -230,10 +244,12 @@ const runScanner = async (sock, {
         for (; state.batchIndex < state.batches.length; state.batchIndex++) {
             const currentBatch = state.batches[state.batchIndex];
             minimalLog('system', `scanning batch ${state.batchIndex + 1}/${state.batches.length} (${currentBatch.length} targets)...`);
+            state.onProgress?.({ processedTargets: 0, phase: 'checking numbers' });
 
             try {
                 const batchJids = currentBatch.map(n => `${n}@s.whatsapp.net`);
                 const waResult = await withTimeout(sock.onWhatsApp(...batchJids), 15000);
+                let processedTargets = 0;
 
                 if (waResult && waResult.length > 0) {
                     const validTargets = waResult.filter(r => r.exists);
@@ -245,9 +261,18 @@ const runScanner = async (sock, {
                         const formattedNumber = '+' + rawNumber; 
                         
                         state.targetUnregistered.push({ number: formattedNumber });
+                        processedTargets++;
+                        state.onProgress?.({ processedTargets, phase: 'checking profiles' });
                     });
 
                     const parallelPromises = validTargets.map(async (res) => {
+                        let progressReported = false;
+                        const reportTargetProgress = () => {
+                            if (progressReported) return;
+                            progressReported = true;
+                            processedTargets++;
+                            state.onProgress?.({ processedTargets, phase: 'checking profiles' });
+                        };
                         const formattedNumber = '+' + res.jid.split('@')[0]; 
                         let bizNode = null;
                         let queryFailed = false;
@@ -271,7 +296,10 @@ const runScanner = async (sock, {
                         }
 
                         // skip processing if query abruptly failed
-                        if (queryFailed) return null;
+                        if (queryFailed) {
+                            reportTargetProgress();
+                            return null;
+                        }
 
                         let isBusiness = false;
                         let accountTier = 0;
@@ -313,6 +341,7 @@ const runScanner = async (sock, {
                         }
 
                         if (!isBusiness) {
+                            reportTargetProgress();
                             return { 
                                 type: 'personal', formattedNumber, finalBio: targetStatus, lastUpdate 
                             };
@@ -380,11 +409,13 @@ const runScanner = async (sock, {
 
                         let finalBio = businessDesc ? businessDesc : targetStatus;
                         
-                        return { 
+                        const profileResult = {
                             type: 'business', formattedNumber, businessInfo, finalBio, lastUpdate, website, email, 
                             timezone, joinTime, coverStatus, displayName, physicalAddress, gpsCoordinates, 
                             cartStatus, botStatus, accountTier, verificationStatus 
                         };
+                        reportTargetProgress();
+                        return profileResult;
                     });
 
                     const parallelResults = await Promise.all(parallelPromises);
@@ -463,6 +494,10 @@ const runScanner = async (sock, {
                 if (logErrors) minimalLog('error', 'batch scanning interrupted:\n' + e.stack);
                 throw e; 
             }
+            state.onProgress?.({
+                processedTargets: currentBatch.length,
+                phase: 'batch complete'
+            });
 
             const isMultipleOf10 = (state.batchIndex + 1) % 10 === 0;
             const isFinished = state.batchIndex === state.batches.length - 1;

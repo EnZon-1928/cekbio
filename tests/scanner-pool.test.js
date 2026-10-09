@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { state } = require('../core/state');
-const { runScannerPool } = require('../core/scanner');
+const { runScanner, runScannerPool } = require('../core/scanner');
 
 const resetScanState = batches => Object.assign(state, {
     isEngineRunning: true,
@@ -47,6 +47,36 @@ const makeWorker = (folder, onWhatsApp) => {
 };
 
 const registeredResults = (...jids) => jids.map(jid => ({ jid, exists: false }));
+
+test('scanner reports per-target progress while checking profiles', async () => {
+    resetScanState([['10000001', '10000002']]);
+    const progressReports = [];
+    state.onProgress = progress => progressReports.push(progress);
+
+    try {
+        await runScanner({
+            onWhatsApp: async (...jids) => jids.map(jid => ({ jid, exists: true })),
+            query: async () => null,
+            fetchStatus: async () => ({})
+        }, {
+            persist: false,
+            finalize: false,
+            closeSocket: false,
+            logCompletion: false,
+            logErrors: false
+        });
+    } finally {
+        delete state.onProgress;
+    }
+
+    assert.ok(progressReports.some(progress =>
+        progress.phase === 'checking profiles' && progress.processedTargets === 1));
+    assert.deepEqual(progressReports.at(-1), {
+        processedTargets: 2,
+        phase: 'batch complete'
+    });
+    assert.equal(state.targetPersonal.length, 2);
+});
 
 test('sender pool scans batches concurrently and combines their results', async () => {
     resetScanState([['10000001'], ['10000002'], ['10000003'], ['10000004']]);

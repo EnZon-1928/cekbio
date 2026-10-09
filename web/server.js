@@ -234,17 +234,19 @@ const routeRequest = async (req, res, server) => {
     }
 
     if (method === 'GET' && pathname === '/api/status') {
-        const totalBatches = state.batches.length;
         const scanStatus = scanJob?.status === 'starting' && state.isEngineRunning
             ? 'running'
             : scanJob?.status;
+        const scanStateReady = !(scanStatus === 'starting' && !state.isEngineRunning);
+        const batches = scanStateReady ? state.batches : [];
+        const totalBatches = batches.length;
         const currentBatch = scanStatus === 'completed'
             ? totalBatches
             : Math.min(state.batchIndex + (state.isEngineRunning ? 1 : 0), totalBatches);
-        const totalTargets = state.batches.reduce((total, batch) => total + batch.length, 0);
+        const totalTargets = batches.reduce((total, batch) => total + batch.length, 0);
         const completedTargets = scanStatus === 'completed'
             ? totalTargets
-            : state.batches
+            : batches
                 .slice(0, Math.min(state.batchIndex, totalBatches))
                 .reduce((total, batch) => total + batch.length, 0);
         sendJson(res, 200, {
@@ -254,15 +256,24 @@ const routeRequest = async (req, res, server) => {
                 sessionFolder: scanJob.sessionFolder,
                 sessionFolders: scanJob.sessionFolders,
                 senderStatuses: scanJob.senderStatuses,
+                activeBatchProgress: Object.entries(scanStateReady ? state.workerProgress || {} : {}).map(([folder, progress]) => ({
+                    folder,
+                    ...progress
+                })),
                 error: scanJob.error,
                 logs: scanJob.logs,
                 currentBatch: scanJob.sessionFolders
                     ? (scanStatus === 'completed' ? totalBatches : state.completedBatchIndices.length)
                     : currentBatch,
                 totalBatches,
+                completedBatches: scanJob.sessionFolders
+                    ? (scanStatus === 'completed'
+                        ? totalBatches
+                        : state.completedBatchIndices.length)
+                    : currentBatch,
                 completedTargets: scanJob.sessionFolders && scanStatus !== 'completed'
-                    ? state.completedBatchIndices.reduce(
-                        (total, index) => total + (state.batches[index]?.length || 0),
+                    ? (scanStateReady ? state.completedBatchIndices : []).reduce(
+                        (total, index) => total + (batches[index]?.length || 0),
                         0
                     )
                     : completedTargets,

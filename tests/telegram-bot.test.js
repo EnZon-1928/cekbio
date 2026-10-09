@@ -8,6 +8,7 @@ const {
     createActionRegistry,
     createActiveTargetSelection,
     formatSenderButtonLabel,
+    formatScanProgress,
     formatTargetButtonLabel,
     formatMainMenuText,
     getTargetDisplayName,
@@ -117,6 +118,41 @@ test('sender labels show connected, checking, and unavailable states clearly', (
     assert.equal(formatSenderButtonLabel('session_2', 'scanning'), '🟢 session_2');
     assert.equal(formatSenderButtonLabel('session_3', 'checking'), '🟡 session_3');
     assert.equal(formatSenderButtonLabel('session_4', 'timeout/dead'), '⚪ session_4');
+});
+
+test('scan progress includes confirmed targets, active batch work, and terminal state', () => {
+    const progress = formatScanProgress({
+        status: 'running',
+        targetFile: 'targets.txt',
+        completedTargets: 20,
+        totalTargets: 100,
+        completedBatches: 2,
+        totalBatches: 10,
+        activeBatchProgress: [{
+            folder: 'session_1',
+            batchIndex: 2,
+            totalBatches: 10,
+            processedTargets: 5,
+            totalTargets: 10,
+            phase: 'checking profiles'
+        }],
+        sessionFolders: ['session_1'],
+        senderStatuses: { session_1: { status: 'scanning' } }
+    });
+
+    assert.match(progress, /25%/);
+    assert.match(progress, /Targets confirmed: 20 \/ 100/);
+    assert.match(progress, /Currently processing: 5 \/ 80/);
+    assert.match(progress, /session_1: batch 3\/10 · 5 \/ 10 targets/);
+
+    assert.match(formatScanProgress({
+        status: 'paused',
+        targetFile: 'targets.txt',
+        completedTargets: 20,
+        totalTargets: 100,
+        completedBatches: 2,
+        totalBatches: 10
+    }), /Progress is saved; resume it from Scan/);
 });
 
 test('start menu shows Targets heading, upload action, and one full-width button per target', () => {
