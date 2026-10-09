@@ -182,25 +182,6 @@ const isAuthorizedUpdate = (ctx, ownerId) => Boolean(ctx.from
     && ctx.chat.id === ctx.from.id
     && String(ctx.from.id) === String(ownerId));
 
-const createApiClient = baseUrl => async (pathname, options = {}) => {
-    let response;
-    try {
-        response = await fetch(new URL(pathname, baseUrl), {
-            ...options,
-            headers: { ...(options.body ? { 'content-type': 'application/json' } : {}), ...options.headers }
-        });
-    } catch {
-        throw new Error('Could not reach the local cekbio service. Check that it is still running.');
-    }
-    const result = response.headers.get('content-type')?.includes('application/json')
-        ? await response.json()
-        : null;
-    if (!response.ok) throw new Error(result?.error || `Local request failed (${response.status}).`);
-    return result;
-};
-
-const jsonPost = body => ({ method: 'POST', body: JSON.stringify(body) });
-
 const paginateItems = (items, requestedPage, pageSize = LIST_PAGE_SIZE) => {
     if (!Number.isSafeInteger(pageSize) || pageSize < 1) throw new Error('Page size must be a positive integer.');
     const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
@@ -237,12 +218,12 @@ const createActionRegistry = (now = Date.now) => {
     };
 };
 
-const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} }) => {
+const startTelegramBot = async ({ token, ownerId, service, onError = () => {} }) => {
     validateTelegramConfig({ token, ownerId });
     ownerId = String(Number(ownerId));
+    if (!service) throw new Error('A local application service is required to start the Telegram bot.');
 
     const bot = new Bot(token);
-    const api = createApiClient(baseUrl);
     const actions = createActionRegistry();
     const activeTargetSelection = createActiveTargetSelection();
     const pendingBatchSizes = new Map();
@@ -329,7 +310,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     const showMainMenu = async (ctx, message = 'What would you like to do?', page = 0) => {
         clearSenderViewRefresh(ctx.chat?.id);
         if (ctx.chat?.id) clearPairingRefresh(ctx.chat.id);
-        const { targets } = await api('/api/targets');
+        const { targets } = service.getTargets();
         const activeTarget = activeTargetSelection.reconcile(targets);
         const { page: currentPage, pageCount } = paginateItems(targets, page);
         const text = formatMainMenuText(message, activeTarget, currentPage, pageCount, targets.length);
@@ -388,7 +369,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
         refresh.timer = setTimeout(async () => {
             if (scanProgressRefreshes.get(key)?.token !== token) return;
             try {
-                const { scan } = await api('/api/status');
+                const { scan } = service.getStatus();
                 if (scanProgressRefreshes.get(key)?.token !== token) return;
                 if (!scan) {
                     scanProgressRefreshes.delete(key);
@@ -437,7 +418,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     };
 
     const refreshScanProgress = async ctx => {
-        const { scan } = await api('/api/status');
+        const { scan } = service.getStatus();
         if (!scan) {
             clearScanProgressRefresh(ctx.chat.id);
             await showMainMenu(ctx, 'No scan is currently available.');
@@ -452,7 +433,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
         refresh.timer = setTimeout(async () => {
             if (!refresh.active || pairingRefreshTimers.get(chatId) !== refresh) return;
             try {
-                const { scan, sender } = await api('/api/status');
+                const { scan, sender } = service.getStatus();
                 if (!refresh.active || pairingRefreshTimers.get(chatId) !== refresh) return;
                 const timedOut = Date.now() >= expiresAt;
                 const presentation = createStatusPresentation(
@@ -492,7 +473,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
 
     const showStatus = async (ctx, message) => {
         clearSenderViewRefresh(ctx.chat?.id);
-        const { scan, sender } = await api('/api/status');
+        const { scan, sender } = service.getStatus();
         const presentation = createStatusPresentation(scan, sender, message);
         const result = await present(ctx, presentation.text, presentation.keyboard);
         const messageId = ctx.callbackQuery?.message?.message_id || result?.message_id;
@@ -511,14 +492,14 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     const showCollection = async (ctx, kind, requestedPage = 0, message) => {
         clearSenderViewRefresh(ctx.chat?.id);
         const config = {
-            senders: { endpoint: '/api/senders', key: 'senders', heading: '👤 Sender sessions' },
-            targets: { endpoint: '/api/targets', key: 'targets', heading: 'Targets' },
-            results: { endpoint: '/api/results', key: 'results', heading: '📦 Scan results' }
+            senders: { list: service.getSenders, key: 'senders', heading: '👤 Sender sessions' },
+            targets: { list: service.getTargets, key: 'targets', heading: 'Targets' },
+            results: { list: service.getResults, key: 'results', heading: '📦 Scan results' }
         }[kind];
         if (!config) throw new Error('This list is not available.');
         const [response, senderHealth] = await Promise.all([
-            api(config.endpoint),
-            kind === 'senders' ? api('/api/senders/health?refresh=0') : Promise.resolve(null)
+            config.list(),
+            kind === 'senders' ? service.getSenderHealth({ probe: false }) : Promise.resolve(null)
         ]);
         const allItems = response[config.key];
         const items = kind === 'results' ? allItems.filter(isResultFilename) : allItems;
@@ -595,8 +576,8 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             if (senderViewTokens.get(chatId) !== token) return;
             try {
                 const [response, health] = await Promise.all([
-                    api('/api/senders'),
-                    api('/api/senders/health?refresh=0&wait=1')
+                    Promise.resolve(service.getSenders()),
+                    service.getSenderHealth({ probe: false, wait: true })
                 ]);
                 if (senderViewTokens.get(chatId) !== token) return;
 
@@ -666,8 +647,8 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
 
     const beginScanForActiveTarget = async ctx => {
         const [{ targets, checkpoints }, { senders }] = await Promise.all([
-            api('/api/targets'),
-            api('/api/senders')
+            Promise.resolve(service.getTargets()),
+            Promise.resolve(service.getSenders())
         ]);
         const target = activeTargetSelection.reconcile(targets);
         if (!target) {
@@ -706,7 +687,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     };
 
     const startSenderPairing = async (ctx, phoneNumber) => {
-        await api('/api/senders', jsonPost({ phoneNumber }));
+        service.startSender({ phoneNumber });
         pendingSenderNumbers.delete(String(ctx.from.id));
         await showStatus(ctx, 'Pairing request started. This status will refresh automatically while pairing is in progress.');
     };
@@ -721,24 +702,24 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
 
     const sendResults = async (ctx, filename) => {
         if (!isResultFilename(filename)) throw new Error('Only generated result text files can be sent.');
-        const { results } = await api('/api/results');
+        const { results } = service.getResults();
         if (!results.includes(filename)) throw new Error('Result not found.');
         await ctx.replyWithDocument(
-            new InputFile(path.join(process.cwd(), filename), filename),
+            new InputFile(service.getResultPath(filename), filename),
             { caption: filename }
         );
     };
 
     const startScan = async (ctx, selection, resume) => {
-        const { senders } = await api('/api/senders');
+        const { senders } = service.getSenders();
         if (!senders.length) throw new Error('No sender sessions are available. Add a sender first.');
-        await api('/api/scan', jsonPost({
+        service.startScan({
             targetFile: selection.target,
             sessionFolders: senders,
             batchSize: selection.batchSize,
             resume
-        }));
-        const { scan } = await api('/api/status');
+        });
+        const { scan } = service.getStatus();
         await showScanProgress(ctx, scan || {
             status: 'starting',
             targetFile: selection.target,
@@ -798,25 +779,22 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
     const shutdownLocalApplication = async ctx => {
         await ctx.reply('The local cekbio application is shutting down.');
         await new Promise(resolve => setTimeout(resolve, 500));
-        await api('/api/shutdown', jsonPost({ confirm: true }));
+        await service.requestShutdown({ confirm: true });
     };
 
     const performAction = async (ctx, action) => {
-        const targetPath = filename => `/api/targets/${encodeURIComponent(filename)}`;
-        const resultPath = filename => `/api/results/${encodeURIComponent(filename)}`;
-
         switch (action.type) {
             case 'delete-sender':
-                await api(`/api/senders/${encodeURIComponent(action.folder)}/delete`, jsonPost({ confirm: true }));
+                await service.deleteSender(action.folder, { confirm: true });
                 if (!action.suppressMenu) await showMainMenu(ctx, `Sender ${action.folder} was removed.`);
                 return;
             case 'delete-target':
-                await api(`${targetPath(action.filename)}/delete`, jsonPost({ confirm: true }));
+                service.deleteTarget(action.filename, { confirm: true });
                 if (activeTargetSelection.get() === action.filename) activeTargetSelection.clear();
                 if (!action.suppressMenu) await showMainMenu(ctx, `Target list ${action.filename} and its checkpoint were removed.`);
                 return;
             case 'delete-result':
-                await api(`${resultPath(action.filename)}/delete`, jsonPost({ confirm: true }));
+                service.deleteResult(action.filename, { confirm: true });
                 if (!action.suppressMenu) await showMainMenu(ctx, `Result ${action.filename} was removed.`);
                 return;
             case 'send-result':
@@ -874,7 +852,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
                 return;
             }
             case 'select-target': {
-                const { targets } = await api('/api/targets');
+                const { targets } = service.getTargets();
                 activeTargetSelection.select(action.filename, targets);
                 if (action.returnToMain) {
                     await showMainMenu(
@@ -960,7 +938,7 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
         }
         clearScanProgressRefresh(ctx.chat?.id);
         try {
-            await api('/api/senders/health');
+            await service.getSenderHealth();
             senderHealthErrors.delete(String(ctx.chat?.id));
         } catch (error) {
             const chatId = String(ctx.chat?.id);
@@ -1075,13 +1053,10 @@ const startTelegramBot = async ({ token, ownerId, baseUrl, onError = () => {} })
             }
             if (extension === '.txt') {
                 const text = new TextDecoder('utf-8', { fatal: true }).decode(contents);
-                const result = await api('/api/targets', jsonPost({ name: filename, contents: text }));
+                const result = service.uploadTargetText({ name: filename, contents: text });
                 await showMainMenu(ctx, `Target list ${result.target} was uploaded. Choose it below to make it active.`);
             } else {
-                const result = await api('/api/targets/xlsx', jsonPost({
-                    name: filename,
-                    contentsBase64: contents.toString('base64')
-                }));
+                const result = service.uploadTargetWorkbook({ name: filename, contents });
                 await showMainMenu(ctx, `${result.message} Choose the target below to make it active.`);
             }
         } catch (error) {

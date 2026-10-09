@@ -41,44 +41,46 @@ process.on('unhandledRejection', (e) => {
     console.log('\n[!] absolute unhandled rejection:\n', e.stack);
 });
 
-// execute main entry point
-if (process.argv[2] === 'web' || process.argv[2] === 'local') {
-    const runTelegram = process.argv[2] === 'local';
-    if (runTelegram) require('dotenv').config();
-    const { startWebServer } = require('./web/server');
-    const configuredPort = process.env.PORT ? Number(process.env.PORT) : 3000;
-    if (!Number.isInteger(configuredPort) || configuredPort < 0 || configuredPort > 65535) {
-        console.error('PORT must be an integer from 0 to 65535.');
-        process.exitCode = 1;
-    } else {
-        startWebServer(configuredPort).then(async server => {
-            if (!runTelegram) return;
+const stopLocalApplication = async telegramBot => {
+    await telegramBot?.stop();
+    if (isAndroid) {
+        await new Promise(resolve => exec('termux-wake-unlock', resolve));
+    }
+    process.exit(0);
+};
 
-            const { startTelegramBot } = require('./telegram/bot');
-            const address = server.address();
-            try {
-                let telegramBot = null;
-                server.once('close', () => telegramBot?.stop());
-                telegramBot = await startTelegramBot({
-                    token: process.env.TELEGRAM_BOT_TOKEN,
-                    ownerId: process.env.TELEGRAM_OWNER_ID,
-                    baseUrl: `http://127.0.0.1:${address.port}`,
-                    onError: () => {
-                        console.error('Telegram polling stopped. Check connectivity and bot configuration.');
-                        server.close();
-                    }
-                });
-                console.log('Dashboard and Telegram bot are running in the same local process.');
-            } catch (error) {
-                server.close();
-                console.error(error.message || 'failed to start the local Telegram bot.');
+const runTelegramBot = async () => {
+    require('dotenv').config();
+    const { createLocalService } = require('./core/local-service');
+    const { startTelegramBot } = require('./telegram/bot');
+    let telegramBot = null;
+    const service = createLocalService({
+        onShutdown: () => stopLocalApplication(telegramBot)
+    });
+
+    try {
+        telegramBot = await startTelegramBot({
+            token: process.env.TELEGRAM_BOT_TOKEN,
+            ownerId: process.env.TELEGRAM_OWNER_ID,
+            service,
+            onError: () => {
+                console.error('Telegram polling stopped. Check connectivity and bot configuration.');
+                void telegramBot?.stop();
                 process.exitCode = 1;
             }
-        }).catch((e) => {
-            console.error('failed to start local web server:', e.stack || e);
-            process.exitCode = 1;
         });
+        console.log('cekbio Telegram bot is running locally. Press Ctrl+C to stop it.');
+    } catch (error) {
+        console.error(error.message || 'Failed to start the local Telegram bot.');
+        process.exitCode = 1;
     }
+};
+
+if (process.argv[2] === 'local') {
+    runTelegramBot();
+} else if (process.argv[2] === 'web') {
+    console.error('The web dashboard is not included in this branch. Use the main branch for the web version.');
+    process.exitCode = 1;
 } else {
     runMainMenu();
 }

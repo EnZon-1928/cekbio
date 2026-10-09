@@ -4,7 +4,6 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "web": "node index.js web",
     "telegram-id": "node telegram/get-owner-id.js",
     "local": "node index.js local",
     "test": "node --test"
