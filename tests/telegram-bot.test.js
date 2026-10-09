@@ -5,10 +5,13 @@ const { InlineKeyboard } = require('grammy');
 const {
     addPairingCodeCopyButton,
     buildMainMenuKeyboard,
+    buildSenderSessionsKeyboard,
     createActionRegistry,
     createActiveTargetSelection,
+    editShutdownNotice,
     formatSenderButtonLabel,
     formatScanProgress,
+    formatSenderSessionsText,
     formatTargetButtonLabel,
     formatMainMenuText,
     getTargetDisplayName,
@@ -18,7 +21,8 @@ const {
     isResultFilename,
     paginateItems,
     shouldContinuePairingRefresh,
-    validateTelegramConfig
+    validateTelegramConfig,
+    TELEGRAM_COMMANDS
 } = require('../telegram/bot');
 
 test('Telegram configuration requires a bot token and numeric owner ID', () => {
@@ -120,6 +124,57 @@ test('sender labels show connected, checking, and unavailable states clearly', (
     assert.equal(formatSenderButtonLabel('session_4', 'timeout/dead'), '⚪ session_4');
 });
 
+test('Sender sessions keeps the same heading and status legend across refreshes', () => {
+    const initial = formatSenderSessionsText(0, 1, 1);
+    const refreshed = formatSenderSessionsText(0, 1, 1);
+
+    assert.equal(initial, refreshed);
+    assert.equal(initial, '👤 Sender sessions\n\n🟢 Active · 🟡 Checking · ⚪ Inactive');
+    assert.match(formatSenderSessionsText(1, 2, 7), /Page 2 of 2/);
+    assert.match(formatSenderSessionsText(0, 1, 0), /No sender sessions found/);
+});
+
+test('Sender sessions keyboard keeps Add sender, sender actions, pagination, and Main menu ordered', () => {
+    const keyboard = buildSenderSessionsKeyboard({
+        senders: ['session_2'],
+        statuses: new Map([['session_2', { status: 'checking' }]]),
+        page: 0,
+        pageCount: 2,
+        callbackData: payload => JSON.stringify(payload)
+    });
+    const rows = keyboard.inline_keyboard;
+    const labels = rows.map(row => row[0].text);
+
+    assert.deepEqual(labels, ['➕ Add sender', '🟡 session_2', 'Remove', 'Next ➡️', '🏠 Main menu']);
+    assert.deepEqual(JSON.parse(rows[1][0].callback_data), { type: 'refresh-senders', page: 0 });
+    assert.deepEqual(JSON.parse(rows[2][0].callback_data), {
+        type: 'confirm',
+        action: { type: 'delete-sender', folder: 'session_2' },
+        returnTo: { type: 'show-senders', page: 0 }
+    });
+});
+
+test('Telegram exposes only /start and /shutdown slash commands', () => {
+    assert.deepEqual(TELEGRAM_COMMANDS.map(({ command }) => command), ['start', 'shutdown']);
+});
+
+test('confirming shutdown edits the confirmation message and removes its buttons', async () => {
+    let edit;
+    let replyCount = 0;
+    await editShutdownNotice({
+        editMessageText: async (text, options) => {
+            edit = { text, options };
+        },
+        reply: async () => {
+            replyCount++;
+        }
+    });
+
+    assert.equal(edit.text, 'The local cekbio application is shutting down.');
+    assert.deepEqual(edit.options.reply_markup.inline_keyboard, []);
+    assert.equal(replyCount, 0);
+});
+
 test('scan progress includes confirmed targets, active batch work, and terminal state', () => {
     const progress = formatScanProgress({
         status: 'running',
@@ -171,9 +226,21 @@ test('start menu shows Targets heading, upload action, and one full-width button
     assert.ok(labels.includes('⬆️ Upload Targets'));
     assert.ok(labels.includes('◯ business_one'));
     assert.ok(labels.includes('✅ personal_two'));
+    assert.equal(labels.at(-1), '⏻ Shutdown');
+    assert.deepEqual(JSON.parse(rows.at(-1)[0].callback_data), { type: 'shutdown' });
     assert.deepEqual(rows.find(row => row[0].text === '⬆️ Upload Targets').map(button => button.text), ['⬆️ Upload Targets']);
     assert.deepEqual(rows.find(row => row[0].text === '✅ personal_two').map(button => button.text), ['✅ personal_two']);
     assert.equal(labels.includes('📄 Targets'), false);
+
+    const pagedTargets = Array.from({ length: 7 }, (_, index) => `target_${index}.txt`);
+    const pagedKeyboard = buildMainMenuKeyboard({
+        targets: pagedTargets,
+        activeTarget: null,
+        page: 0,
+        callbackData: payload => JSON.stringify(payload)
+    });
+    assert.deepEqual(pagedKeyboard.inline_keyboard.at(-2).map(button => button.text), ['Next ➡️']);
+    assert.equal(pagedKeyboard.inline_keyboard.at(-1)[0].text, '⏻ Shutdown');
 });
 
 test('pairing code is available only while the pairing operation is running', () => {

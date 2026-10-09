@@ -87,7 +87,9 @@ Add or select a sender session, choose a `.txt` target list, then review the gen
 
    Keep the terminal or Termux open while the bot is in use. Press **Ctrl+C** to stop the local application.
 
-Use `/start` or `/help` to open the button menu. It provides **Status**, **Senders**, **Scan**, **Results**, and a **Targets** section. Choose **Upload Targets** before sending a `.txt` or `.xlsx` document. Select one target from the main menu; Scan uses that target and all sender sessions that connect successfully. Scan setup offers batch-size and checkpoint choices, then reports progress in Telegram. Sender health checks run automatically, and sender deletion requires confirmation. During pairing, **Status** refreshes automatically and **Copy code** copies only the pairing code.
+Use `/start` to open the button menu. The only slash commands shown by the bot are `/start` and `/shutdown`; other operations are available through the buttons. The menu provides **Status**, **Senders**, **Scan**, **Results**, a **Targets** section, and a **Shutdown** button at the bottom. Choose **Upload Targets** before sending a `.txt` or `.xlsx` document. Select one target from the main menu; Scan uses that target and all sender sessions that connect successfully. Scan setup offers batch-size and checkpoint choices, then reports progress in Telegram. Sender health checks run automatically, the Sender sessions view keeps the same status legend while refreshing, and sender deletion requires confirmation. During pairing, **Status** refreshes automatically and **Copy code** copies only the pairing code.
+
+The **Shutdown** button asks for confirmation. Confirming removes the confirmation buttons and leaves a shutdown notice visible while the local application stops. Shutdown affects only the cekbio process, never the operating system, and is refused while a scan or sender operation is active.
 
 The bot can explicitly send generated `result_*.txt` files to your private chat. It never sends target files, internal result JSON, or WhatsApp session data.
 

@@ -8,6 +8,16 @@ const ACTION_TTL_MS = 10 * 60 * 1000;
 const LIST_PAGE_SIZE = 6;
 const PAIRING_REFRESH_INTERVAL_MS = 500;
 const PAIRING_REFRESH_MAX_DURATION_MS = 185000;
+const TELEGRAM_COMMANDS = Object.freeze([
+    { command: 'start', description: 'Open the button menu' },
+    { command: 'shutdown', description: 'Stop the local application' }
+].map(command => Object.freeze(command)));
+const SHUTDOWN_NOTICE = 'The local cekbio application is shutting down.';
+
+const editShutdownNotice = ctx => ctx.editMessageText(
+    SHUTDOWN_NOTICE,
+    { reply_markup: { inline_keyboard: [] } }
+);
 
 const validateTelegramConfig = ({ token, ownerId }) => {
     if (typeof token !== 'string' || !token.trim()) {
@@ -38,6 +48,14 @@ const formatSenderButtonLabel = (folder, status) => {
             : '⚪';
     return `${indicator} ${folder}`;
 };
+
+const formatSenderSessionsText = (page, pageCount, senderCount) => [
+    '👤 Sender sessions',
+    '',
+    '🟢 Active · 🟡 Checking · ⚪ Inactive',
+    ...(pageCount > 1 ? [`Page ${page + 1} of ${pageCount}`] : []),
+    ...(senderCount ? [] : ['', 'No sender sessions found. Add a sender from the Senders menu.'])
+].join('\n');
 
 const formatScanProgress = scan => {
     if (!scan) return '🔎 Scan progress\n\nNo scan information is available.';
@@ -155,6 +173,31 @@ const buildMainMenuKeyboard = ({ targets, activeTarget, page, callbackData }) =>
         }
         keyboard.row();
     }
+    addButton('⏻ Shutdown', { type: 'shutdown' });
+    return keyboard;
+};
+
+const buildSenderSessionsKeyboard = ({ senders, statuses, page, pageCount, callbackData }) => {
+    const keyboard = new InlineKeyboard();
+    const addButton = (label, payload) => keyboard.text(label, callbackData(payload));
+    addButton('➕ Add sender', { type: 'add-sender' }).row();
+    for (const folder of senders) {
+        addButton(formatSenderButtonLabel(folder, statuses.get(folder)?.status), {
+            type: 'refresh-senders',
+            page
+        }).row();
+        addButton('Remove', {
+            type: 'confirm',
+            action: { type: 'delete-sender', folder },
+            returnTo: { type: 'show-senders', page }
+        }).row();
+    }
+    if (pageCount > 1) {
+        if (page > 0) addButton('⬅️ Previous', { type: 'show-senders', page: page - 1 });
+        if (page + 1 < pageCount) addButton('Next ➡️', { type: 'show-senders', page: page + 1 });
+        keyboard.row();
+    }
+    addButton('🏠 Main menu', { type: 'main-menu' });
     return keyboard;
 };
 
@@ -258,24 +301,6 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         if (refresh) clearTimeout(refresh.timer);
         scanProgressRefreshes.delete(key);
         scanProgressErrors.delete(key);
-    };
-
-    const createSenderListKeyboard = (senders, statuses, page) => {
-        const keyboard = new InlineKeyboard();
-        actionButton(keyboard, '➕ Add sender', { type: 'add-sender' }).row();
-        for (const folder of senders) {
-            const status = statuses.get(folder)?.status;
-            actionButton(keyboard, formatSenderButtonLabel(folder, status), {
-                type: 'refresh-senders',
-                page
-            }).row();
-            actionButton(keyboard, 'Remove', {
-                type: 'confirm',
-                action: { type: 'delete-sender', folder },
-                returnTo: { type: 'show-senders', page }
-            }).row();
-        }
-        return keyboard;
     };
 
     const present = (ctx, text, replyMarkup) => {
@@ -511,14 +536,27 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
 
         if (kind === 'senders') {
             const statuses = new Map(senderHealth.senders.map(item => [item.folder, item]));
-            keyboard.inline_keyboard.push(...createSenderListKeyboard(visibleItems, statuses, page).inline_keyboard);
+            const result = await present(
+                ctx,
+                formatSenderSessionsText(page, pageCount, items.length),
+                buildSenderSessionsKeyboard({
+                    senders: visibleItems,
+                    statuses,
+                    page,
+                    pageCount,
+                    callbackData: registerAction
+                })
+            );
+            if (senderHealth.checking) {
+                const messageId = ctx.callbackQuery?.message?.message_id || result?.message_id;
+                if (messageId) scheduleSenderViewRefresh(ctx.chat.id, messageId, page);
+            }
+            return result;
         } else if (kind === 'targets') {
             actionButton(keyboard, '⬆️ Upload Targets', { type: 'upload-targets', page }).row();
         }
         visibleItems.forEach(item => {
-            if (kind === 'senders') {
-                return;
-            } else if (kind === 'targets') {
+            if (kind === 'targets') {
                 actionButton(keyboard, item, { type: 'target-details', filename: item, page });
             } else if (kind === 'results') {
                 actionButton(keyboard, item, { type: 'result-details', filename: item, page });
@@ -549,21 +587,13 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
 
         const emptyMessage = kind === 'results'
             ? 'No results with findings are available yet.'
-            : kind === 'targets'
-                    ? 'Send a .txt or .xlsx document to this chat using Upload Targets.'
-                    : 'No sender sessions found. Add a sender from the Senders menu.';
-        const text = kind === 'senders'
-            ? `${config.heading}\n\n${items.length ? '🟢 Active · 🟡 Checking · ⚪ Inactive' : emptyMessage}${pageCount > 1 ? `\nPage ${page + 1} of ${pageCount}` : ''}`
-            : kind === 'targets'
+            : 'Send a .txt or .xlsx document to this chat using Upload Targets.';
+        const text = kind === 'targets'
             ? `${config.heading}\n\n${message ? `${message}\n` : ''}${items.length ? 'Choose a target to manage it. Select the active target from the main menu.' : emptyMessage}${pageCount > 1 ? `\nPage ${page + 1} of ${pageCount}` : ''}`
             : items.length
                 ? `${config.heading} · page ${page + 1} of ${pageCount}`
                 : `${config.heading}\n\n${emptyMessage}`;
         const result = await present(ctx, text, keyboard);
-        if (kind === 'senders' && senderHealth.checking) {
-            const messageId = ctx.callbackQuery?.message?.message_id || result?.message_id;
-            if (messageId) scheduleSenderViewRefresh(ctx.chat.id, messageId, page);
-        }
         return result;
     };
 
@@ -583,25 +613,17 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
 
                 const { page: currentPage, pageCount, items } = paginateItems(response.senders, page);
                 const statuses = new Map(health.senders.map(item => [item.folder, item]));
-                const keyboard = createSenderListKeyboard(items, statuses, currentPage);
-                if (pageCount > 1) {
-                    if (currentPage > 0) actionButton(keyboard, '⬅️ Previous', {
-                        type: 'show-senders',
-                        page: currentPage - 1
-                    });
-                    if (currentPage + 1 < pageCount) actionButton(keyboard, 'Next ➡️', {
-                        type: 'show-senders',
-                        page: currentPage + 1
-                    });
-                    keyboard.row();
-                }
-                addMenuButton(keyboard).row();
+                const keyboard = buildSenderSessionsKeyboard({
+                    senders: items,
+                    statuses,
+                    page: currentPage,
+                    pageCount,
+                    callbackData: registerAction
+                });
                 await bot.api.editMessageText(
                     chatId,
                     messageId,
-                    items.length
-                        ? `👤 Sender sessions · page ${currentPage + 1} of ${pageCount}`
-                        : '👤 Sender sessions\n\nNo sender sessions found. Add a sender from the Senders menu.',
+                    formatSenderSessionsText(currentPage, pageCount, response.senders.length),
                     { reply_markup: keyboard }
                 );
                 senderViewRefreshes.delete(chatId);
@@ -777,7 +799,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     };
 
     const shutdownLocalApplication = async ctx => {
-        await ctx.reply('The local cekbio application is shutting down.');
+        await editShutdownNotice(ctx);
         await new Promise(resolve => setTimeout(resolve, 500));
         await service.requestShutdown({ confirm: true });
     };
@@ -911,6 +933,10 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 await startScan(ctx, action.selection, action.resume);
                 return;
             case 'confirm':
+                if (action.action.type === 'shutdown') {
+                    await shutdownLocalApplication(ctx);
+                    return;
+                }
                 await performAction(ctx, { ...action.action, suppressMenu: true });
                 if (action.returnTo) await performAction(ctx, action.returnTo);
                 return;
@@ -924,7 +950,11 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 await promptSenderPhone(ctx);
                 return;
             case 'shutdown':
-                await shutdownLocalApplication(ctx);
+                await askConfirmation(
+                    ctx,
+                    'Shut down the local cekbio application? This does not shut down Windows.',
+                    { type: 'shutdown' }
+                );
                 return;
             default:
                 throw new Error('This action is not available.');
@@ -967,23 +997,8 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     });
     bot.callbackQuery('noop', async ctx => ctx.answerCallbackQuery());
 
-    bot.command(['start', 'help'], async ctx => {
+    bot.command('start', async ctx => {
         await showMainMenu(ctx, 'Choose an action below.');
-    });
-
-    bot.command('status', ctx => showStatus(ctx));
-    bot.command('senders', ctx => showCollection(ctx, 'senders'));
-    bot.command('targets', ctx => showCollection(ctx, 'targets'));
-    bot.command('results', ctx => showCollection(ctx, 'results'));
-    bot.command('scan', ctx => beginScanForActiveTarget(ctx));
-
-    bot.command('addsender', async ctx => {
-        const phoneNumber = String(ctx.match || '').trim();
-        if (!phoneNumber || phoneNumber.replace(/\D/g, '').length < 6) {
-            await promptSenderPhone(ctx);
-            return;
-        }
-        await startSenderPairing(ctx, phoneNumber);
     });
 
     bot.command('shutdown', async ctx => {
@@ -1073,17 +1088,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     });
 
     await bot.init();
-    await bot.api.setMyCommands([
-        { command: 'start', description: 'Open the button menu' },
-        { command: 'help', description: 'Show the button menu and help' },
-        { command: 'status', description: 'Show scan and sender status' },
-        { command: 'senders', description: 'List and manage sender sessions' },
-        { command: 'targets', description: 'List and manage target lists' },
-        { command: 'results', description: 'Send or remove generated results' },
-        { command: 'scan', description: 'Start a scan' },
-        { command: 'addsender', description: 'Add a sender session' },
-        { command: 'shutdown', description: 'Stop the local application' }
-    ]);
+    await bot.api.setMyCommands(TELEGRAM_COMMANDS);
 
     const polling = bot.start({
         onStart: info => console.log(`Telegram bot @${info.username} is connected in private-owner mode.`)
@@ -1114,9 +1119,11 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
 module.exports = {
     addPairingCodeCopyButton,
     buildMainMenuKeyboard,
+    buildSenderSessionsKeyboard,
     createActionRegistry,
     createActiveTargetSelection,
     formatSenderButtonLabel,
+    formatSenderSessionsText,
     formatScanProgress,
     formatTargetButtonLabel,
     formatMainMenuText,
@@ -1127,6 +1134,8 @@ module.exports = {
     shouldContinuePairingRefresh,
     isResultFilename,
     paginateItems,
+    editShutdownNotice,
     startTelegramBot,
+    TELEGRAM_COMMANDS,
     validateTelegramConfig
 };
