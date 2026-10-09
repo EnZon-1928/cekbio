@@ -202,7 +202,37 @@ The existing CLI remains available:
 node index.js
 ```
 
-Use either the CLI or web dashboard at a time. Do not open the same sender session in both processes simultaneously.
+Use the CLI separately from the web dashboard. The optional Telegram bot runs in the same process as the dashboard; do not open the same sender session from another cekbio process at the same time.
+
+### Optional Telegram control (Windows)
+
+The Telegram bot can run alongside the dashboard on the same Windows Node.js process. It uses long polling, so no public inbound port is needed. Keep the computer awake and connected to the internet while you want the bot available.
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) using `/newbot`. Keep its token private.
+2. In the project directory, create a private `.env` file from the example and enter the bot token:
+
+   ```powershell
+   Copy-Item .env.example .env
+   notepad .env
+   ```
+
+3. In `.env`, set `TELEGRAM_BOT_TOKEN` to the token from BotFather. Save the file, then run the temporary ID helper:
+
+   ```powershell
+   npm run telegram-id
+   ```
+
+   Open your bot's private chat and send `/myid`. Copy the numeric ID returned in the chat, stop the helper with **Ctrl+C**, and add that value as `TELEGRAM_OWNER_ID` in `.env`.
+
+4. Start the dashboard and Telegram bot together:
+
+   ```powershell
+   npm run local
+   ```
+
+   Open the local dashboard at `http://127.0.0.1:3000`. In your private Telegram chat, use `/help` for bot commands. Send a `.txt` or `.xlsx` document to the bot to add a target list.
+
+The bot accepts commands only from the configured Telegram user ID in a private chat; group chats and all other users are ignored. It can manage sender sessions, start scans, and explicitly send generated `result_*.txt` files to your Telegram chat. It never sends target lists, internal `target_*.json` data, or WhatsApp session credentials. Keep `.env` private and do not send its contents to anyone or commit it. Use `npm run web` if you want to run only the dashboard.
 
 ## 🛠️ Troubleshooting
 
@@ -256,6 +286,7 @@ Android may stop Termux when it is in the background or under battery pressure. 
 - Older `report_*.txt` files are left untouched, not shown in Results, and excluded from target discovery.
 - The scanner's batch behavior, result content, and checkpoint format remain unchanged. Pause and cancel controls are not provided.
 - Use **Shut down** in the dashboard to stop the local Node.js application. It does not shut down the operating system and refuses to stop while a scan or sender operation is active.
+- For Telegram control on Windows, configure `.env` from `.env.example` and run `npm run local`; `npm run web` starts only the dashboard.
 
 To choose a different web port:
 
