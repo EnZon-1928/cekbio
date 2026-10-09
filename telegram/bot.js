@@ -19,7 +19,7 @@ const TELEGRAM_COMMANDS = Object.freeze([
 ].map(command => Object.freeze(command)));
 const SHUTDOWN_NOTICE = 'The local cekbio application is shutting down.';
 
-const editShutdownNotice = ctx => ctx.editMessageText(
+const editShutdownNotice = updateMessage => updateMessage(
     SHUTDOWN_NOTICE,
     { reply_markup: { inline_keyboard: [] } }
 );
@@ -58,6 +58,47 @@ const getActionButtonStyle = (label, payload) =>
     label === 'Remove' || label.startsWith('Remove ') || label === 'Cancel'
         ? BUTTON_STYLE.danger
         : BUTTON_STYLE.primary;
+
+const isMessageNotModifiedError = error =>
+    /message is not modified/i.test(error?.description || error?.message || '');
+
+const isDashboardUneditableError = error =>
+    /message to edit not found|message can't be edited|message identifier is not specified/i
+        .test(error?.description || error?.message || '');
+
+const createDashboardPresenter = ({ sendMessage, editMessageText }) => {
+    const messageIds = new Map();
+    return {
+        async present(chatId, preferredMessageId, text, replyMarkup) {
+            let messageId = messageIds.get(chatId) || preferredMessageId;
+            const options = { reply_markup: replyMarkup };
+            if (messageId) {
+                try {
+                    await editMessageText(chatId, messageId, text, options);
+                    messageIds.set(chatId, messageId);
+                    return { message_id: messageId };
+                } catch (error) {
+                    if (isMessageNotModifiedError(error)) {
+                        messageIds.set(chatId, messageId);
+                        return { message_id: messageId };
+                    }
+                    if (!isDashboardUneditableError(error)) throw error;
+                    if (messageIds.get(chatId) === messageId) messageIds.delete(chatId);
+                }
+            }
+            const message = await sendMessage(chatId, text, options);
+            if (!message?.message_id) throw new Error('Telegram did not return a dashboard message ID.');
+            messageIds.set(chatId, message.message_id);
+            return message;
+        },
+        getMessageId(chatId) {
+            return messageIds.get(chatId) || null;
+        },
+        clear() {
+            messageIds.clear();
+        }
+    };
+};
 
 const formatSenderSessionsText = (page, pageCount, senderCount) => [
     '👤 Sender sessions',
@@ -140,7 +181,7 @@ const createActiveTargetSelection = () => {
 
 const addPairingCodeCopyButton = (keyboard, pairingCode) => {
     keyboard.copyText(
-        { text: '📋 Copy code', style: BUTTON_STYLE.primary },
+        { text: `🔑 ${pairingCode}`, style: BUTTON_STYLE.primary },
         pairingCode
     ).row();
     return keyboard;
@@ -158,7 +199,7 @@ const getVisiblePairingCode = sender =>
         ? sender.pairingCode
         : null;
 
-const buildMainMenuKeyboard = ({ targets, activeTarget, page, callbackData }) => {
+const buildMainMenuKeyboard = ({ targets, activeTarget, page, callbackData, scanStatus }) => {
     const keyboard = new InlineKeyboard();
     const { page: currentPage, pageCount, items } = paginateItems(targets, page);
     const addButton = (label, payload, style = BUTTON_STYLE.primary) =>
@@ -167,9 +208,12 @@ const buildMainMenuKeyboard = ({ targets, activeTarget, page, callbackData }) =>
             callbackData(payload)
         );
 
-    addButton('📊 Status', { type: 'show-status' });
-    addButton('👤 Senders', { type: 'show-senders', page: 0 }).row();
-    addButton('🔎 Scan', { type: 'show-scan', page: 0 });
+    addButton('👤 Senders', { type: 'show-senders', page: 0 });
+    const scanInProgress = ['starting', 'running'].includes(scanStatus);
+    addButton(
+        scanInProgress ? '🔎 Scan progress' : '🔎 Scan',
+        scanInProgress ? { type: 'scan-progress-refresh' } : { type: 'show-scan', page: 0 }
+    ).row();
     addButton('📦 Results', { type: 'show-results', page: 0 }).row();
     addButton('⬆️ Upload Targets', { type: 'upload-targets', page: currentPage }).row();
 
@@ -286,6 +330,11 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     if (!service) throw new Error('A local application service is required to start the Telegram bot.');
 
     const bot = new Bot(token);
+    const dashboard = createDashboardPresenter({
+        sendMessage: (chatId, text, options) => bot.api.sendMessage(chatId, text, options),
+        editMessageText: (chatId, messageId, text, options) =>
+            bot.api.editMessageText(chatId, messageId, text, options)
+    });
     const actions = createActionRegistry();
     const activeTargetSelection = createActiveTargetSelection();
     const pendingBatchSizes = new Map();
@@ -329,8 +378,17 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     };
 
     const present = (ctx, text, replyMarkup) => {
-        const options = { reply_markup: replyMarkup };
-        return ctx.callbackQuery ? ctx.editMessageText(text, options) : ctx.reply(text, options);
+        const chatId = ctx.chat?.id;
+        if (!chatId) throw new Error('A private chat is required to show the Telegram dashboard.');
+        clearSenderViewRefresh(chatId);
+        clearScanProgressRefresh(chatId);
+        clearPairingRefresh(chatId);
+        return dashboard.present(
+            chatId,
+            ctx.callbackQuery?.message?.message_id,
+            text,
+            replyMarkup
+        );
     };
 
     const clearPairingRefresh = (chatId, clearErrors = true) => {
@@ -343,12 +401,13 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         if (clearErrors) pairingRefreshErrors.delete(chatId);
     };
 
-    const mainMenuKeyboard = (targets, activeTarget, page) => {
+    const mainMenuKeyboard = (targets, activeTarget, page, scanStatus) => {
         return buildMainMenuKeyboard({
             targets,
             activeTarget,
             page,
-            callbackData: registerAction
+            callbackData: registerAction,
+            scanStatus
         });
     };
 
@@ -361,10 +420,11 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         clearSenderViewRefresh(ctx.chat?.id);
         if (ctx.chat?.id) clearPairingRefresh(ctx.chat.id);
         const { targets } = service.getTargets();
+        const { scan } = service.getStatus();
         const activeTarget = activeTargetSelection.reconcile(targets);
         const { page: currentPage, pageCount } = paginateItems(targets, page);
         const text = formatMainMenuText(message, activeTarget, currentPage, pageCount, targets.length);
-        return present(ctx, text, mainMenuKeyboard(targets, activeTarget, currentPage));
+        return present(ctx, text, mainMenuKeyboard(targets, activeTarget, currentPage, scan?.status));
     };
 
     const createStatusPresentation = (scan, sender, message, includePairingCode = true) => {
@@ -393,10 +453,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         }
         lines.push(`Sender operation: ${sender?.status || 'idle'}`);
         if (sender?.sessionFolder) lines.push(`Session: ${sender.sessionFolder}`);
-        if (pairingCode) {
-            lines.push(`Pairing code: ${pairingCode}`);
-            lines.push('Enter this code in WhatsApp to link the sender.');
-        }
+        if (pairingCode) lines.push('Enter the code shown on the button in WhatsApp to link the sender.');
         if (sender?.error) lines.push(`Sender error: ${sender.error}`);
         if (scan?.error) lines.push(`Scan error: ${scan.error}`);
         const keyboard = new InlineKeyboard();
@@ -427,10 +484,14 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 }
                 const text = formatScanProgress(scan);
                 if (text !== refresh.lastText) {
-                    await bot.api.editMessageText(chatId, messageId, text, {
-                        reply_markup: scanProgressKeyboard()
-                    });
+                    const message = await dashboard.present(
+                        chatId,
+                        messageId,
+                        text,
+                        scanProgressKeyboard()
+                    );
                     refresh.lastText = text;
+                    messageId = message.message_id;
                 }
                 scanProgressErrors.delete(key);
                 if (['starting', 'running'].includes(scan.status)) {
@@ -455,7 +516,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         clearScanProgressRefresh(ctx.chat.id);
         const text = formatScanProgress(scan);
         const result = await present(ctx, text, scanProgressKeyboard());
-        const messageId = ctx.callbackQuery?.message?.message_id || result?.message_id;
+        const messageId = dashboard.getMessageId(ctx.chat.id) || result?.message_id;
         if (messageId && ['starting', 'running'].includes(scan?.status)) {
             scheduleScanProgressRefresh(
                 ctx.chat.id,
@@ -492,9 +553,13 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                     timedOut ? 'Automatic refresh paused. Use Refresh to check again.' : null,
                     !timedOut
                 );
-                await bot.api.editMessageText(chatId, messageId, presentation.text, {
-                    reply_markup: presentation.keyboard
-                });
+                const message = await dashboard.present(
+                    chatId,
+                    messageId,
+                    presentation.text,
+                    presentation.keyboard
+                );
+                messageId = message.message_id;
                 pairingRefreshErrors.delete(chatId);
                 if (shouldContinuePairingRefresh(sender, expiresAt)) {
                     schedulePairingRefresh(chatId, messageId, expiresAt, true);
@@ -502,19 +567,18 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                     pairingRefreshTimers.delete(chatId);
                     pairingRefreshErrors.delete(chatId);
                 }
-            } catch {
+            } catch (error) {
                 if (!refresh.active || pairingRefreshTimers.get(chatId) !== refresh) return;
+                if (!pairingRefreshErrors.has(chatId)) {
+                    console.error('Telegram pairing status refresh failed:', error.message);
+                    pairingRefreshErrors.add(chatId);
+                }
                 if (Date.now() < expiresAt) {
-                    if (!pairingRefreshErrors.has(chatId)) {
-                        console.error('Telegram pairing status refresh failed; retrying while pairing remains active.');
-                        pairingRefreshErrors.add(chatId);
-                    }
                     schedulePairingRefresh(chatId, messageId, expiresAt, true);
                     return;
                 }
                 pairingRefreshTimers.delete(chatId);
                 pairingRefreshErrors.delete(chatId);
-                console.error('Telegram pairing status refresh stopped after repeated update failures.');
             }
         }, PAIRING_REFRESH_INTERVAL_MS);
         refresh.timer.unref?.();
@@ -526,7 +590,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         const { scan, sender } = service.getStatus();
         const presentation = createStatusPresentation(scan, sender, message);
         const result = await present(ctx, presentation.text, presentation.keyboard);
-        const messageId = ctx.callbackQuery?.message?.message_id || result?.message_id;
+        const messageId = dashboard.getMessageId(ctx.chat.id) || result?.message_id;
         if (!isPairingInProgress(sender)) {
             clearPairingRefresh(ctx.chat.id);
         } else if (messageId) {
@@ -573,7 +637,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 })
             );
             if (senderHealth.checking) {
-                const messageId = ctx.callbackQuery?.message?.message_id || result?.message_id;
+                const messageId = dashboard.getMessageId(ctx.chat.id) || result?.message_id;
                 if (messageId) scheduleSenderViewRefresh(ctx.chat.id, messageId, page);
             }
             return result;
@@ -645,11 +709,11 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                     pageCount,
                     callbackData: registerAction
                 });
-                await bot.api.editMessageText(
+                await dashboard.present(
                     chatId,
                     messageId,
                     formatSenderSessionsText(currentPage, pageCount, response.senders.length),
-                    { reply_markup: keyboard }
+                    keyboard
                 );
                 senderViewRefreshes.delete(chatId);
                 senderViewTokens.delete(chatId);
@@ -729,7 +793,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
             type: 'scan-custom-size',
             selection
         }).row();
-        actionButton(keyboard, '⬅️ Back to menu', { type: 'main-menu' }).row();
+        addMenuButton(keyboard).row();
         return present(ctx, `Choose the number of targets per batch for ${selection.target}:`, keyboard);
     };
 
@@ -824,7 +888,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     };
 
     const shutdownLocalApplication = async ctx => {
-        await editShutdownNotice(ctx);
+        await editShutdownNotice((text, options) => present(ctx, text, options.reply_markup));
         await new Promise(resolve => setTimeout(resolve, 500));
         await service.requestShutdown({ confirm: true });
     };
@@ -880,17 +944,17 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
             case 'upload-targets': {
                 const keyboard = new InlineKeyboard();
                 if (action.returnToMain) {
-                    actionButton(keyboard, '⬅️ Back to menu', {
+                    actionButton(keyboard, '🏠 Main menu', {
                         type: 'main-menu-page',
                         page: action.page || 0
-                    });
+                    }).row();
                 } else {
-                    actionButton(keyboard, '⬅️ Back to Targets', {
+                    actionButton(keyboard, '⬅️ Back', {
                         type: 'show-targets',
                         page: action.page || 0
-                    });
+                    }).row();
+                    actionButton(keyboard, 'Cancel', { type: 'main-menu' }).row();
                 }
-                actionButton(keyboard, 'Cancel', { type: 'main-menu' }).row();
                 await present(
                     ctx,
                     'Upload Targets\n\nSend a .txt or .xlsx document to this chat to add a target list.',
@@ -991,7 +1055,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
             if (ctx.callbackQuery) await ctx.answerCallbackQuery();
             return;
         }
-        clearScanProgressRefresh(ctx.chat?.id);
+        if (ctx.callbackQuery) clearScanProgressRefresh(ctx.chat?.id);
         try {
             await service.getSenderHealth();
             senderHealthErrors.delete(String(ctx.chat?.id));
@@ -1023,6 +1087,8 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     bot.callbackQuery('noop', async ctx => ctx.answerCallbackQuery());
 
     bot.command('start', async ctx => {
+        pendingBatchSizes.delete(String(ctx.from.id));
+        pendingSenderNumbers.delete(String(ctx.from.id));
         await showMainMenu(ctx, 'Choose an action below.');
     });
 
@@ -1044,7 +1110,13 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
             }
             const phoneNumber = ctx.message.text.trim();
             if (phoneNumber.replace(/\D/g, '').length < 6) {
-                await ctx.reply('Enter a valid phone number including country code, or use Cancel.');
+                const keyboard = new InlineKeyboard();
+                actionButton(keyboard, 'Cancel', { type: 'main-menu' });
+                await present(
+                    ctx,
+                    'That number looks too short. Enter the sender number with country code, or cancel.',
+                    keyboard
+                );
                 return;
             }
             await startSenderPairing(ctx, phoneNumber);
@@ -1060,7 +1132,13 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         const batchText = ctx.message.text.trim();
         const batchSize = Number(batchText);
         if (!/^\d+$/.test(batchText) || !Number.isSafeInteger(batchSize) || batchSize < 1) {
-            await ctx.reply('Batch size must be a positive whole number. Try again or use Cancel.');
+            const keyboard = new InlineKeyboard();
+            actionButton(keyboard, '⬅️ Back', {
+                type: 'show-scan-batches',
+                selection: pending
+            });
+            actionButton(keyboard, 'Cancel', { type: 'main-menu' });
+            await present(ctx, 'Enter a positive whole number for the batch size, or cancel.', keyboard);
             return;
         }
         pendingBatchSizes.delete(ownerKey);
@@ -1072,11 +1150,11 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         const filename = document.file_name || '';
         const extension = path.extname(filename).toLowerCase();
         if (!['.txt', '.xlsx'].includes(extension)) {
-            await ctx.reply('Only .txt and .xlsx target files are supported.');
+            await showMainMenu(ctx, 'Only .txt and .xlsx target files are supported.');
             return;
         }
         if (document.file_size > MAX_UPLOAD_BYTES) {
-            await ctx.reply('The target file must be no larger than 10 MB.');
+            await showMainMenu(ctx, 'The target file must be no larger than 10 MB.');
             return;
         }
         try {
@@ -1100,15 +1178,21 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 await showMainMenu(ctx, `${result.message} Choose the target below to make it active.`);
             }
         } catch (error) {
-            await ctx.reply(error.message || 'The target file could not be uploaded.');
+            await showMainMenu(ctx, error.message || 'The target file could not be uploaded.');
         }
     });
 
     bot.catch(async error => {
         try {
-            await error.ctx.reply('The bot could not complete that request. Check the local application and try again.');
+            const keyboard = new InlineKeyboard();
+            addMenuButton(keyboard);
+            await present(
+                error.ctx,
+                'The bot could not complete that request. Check the local application and try again.',
+                keyboard
+            );
         } catch {
-            console.error('Telegram update failed; check bot connectivity and the local application.');
+            console.error('Telegram update failed while updating the dashboard; check bot connectivity and the local application.');
         }
     });
 
@@ -1135,6 +1219,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
             for (const refresh of scanProgressRefreshes.values()) clearTimeout(refresh.timer);
             scanProgressRefreshes.clear();
             scanProgressErrors.clear();
+            dashboard.clear();
             return bot.stop();
         },
         polling
@@ -1147,6 +1232,7 @@ module.exports = {
     buildSenderSessionsKeyboard,
     createActionRegistry,
     createActiveTargetSelection,
+    createDashboardPresenter,
     formatSenderButtonLabel,
     getActionButtonStyle,
     getSenderButtonStyle,

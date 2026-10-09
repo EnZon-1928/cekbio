@@ -8,6 +8,7 @@ const {
     buildSenderSessionsKeyboard,
     createActionRegistry,
     createActiveTargetSelection,
+    createDashboardPresenter,
     editShutdownNotice,
     formatSenderButtonLabel,
     formatScanProgress,
@@ -100,9 +101,83 @@ test('pairing-code copy button copies only the code', () => {
     const keyboard = addPairingCodeCopyButton(new InlineKeyboard(), '581204');
     const copyButton = keyboard.inline_keyboard.flat().find(button => button.copy_text);
 
-    assert.equal(copyButton.text, '📋 Copy code');
+    assert.equal(copyButton.text, '🔑 581204');
     assert.deepEqual(copyButton.copy_text, { text: '581204' });
     assert.equal(copyButton.style, 'primary');
+});
+
+test('dashboard creates one control message and edits it for later updates', async () => {
+    const sent = [];
+    const edited = [];
+    const dashboard = createDashboardPresenter({
+        sendMessage: async (...args) => {
+            sent.push(args);
+            return { message_id: 41 };
+        },
+        editMessageText: async (...args) => edited.push(args)
+    });
+    const keyboard = new InlineKeyboard().text('Next', 'next');
+
+    assert.deepEqual(await dashboard.present(123, null, 'Home', keyboard), { message_id: 41 });
+    assert.deepEqual(await dashboard.present(123, null, 'Status', keyboard), { message_id: 41 });
+    assert.equal(sent.length, 1);
+    assert.equal(edited.length, 1);
+    assert.equal(dashboard.getMessageId(123), 41);
+    assert.deepEqual(edited[0].slice(0, 3), [123, 41, 'Status']);
+});
+
+test('dashboard uses callback message when no in-memory dashboard exists', async () => {
+    const edited = [];
+    const dashboard = createDashboardPresenter({
+        sendMessage: async () => assert.fail('A new dashboard should not be sent.'),
+        editMessageText: async (...args) => edited.push(args)
+    });
+
+    await dashboard.present(123, 77, 'Updated', new InlineKeyboard());
+
+    assert.equal(dashboard.getMessageId(123), 77);
+    assert.equal(edited[0][1], 77);
+});
+
+test('dashboard treats an unchanged Telegram message as updated without sending a duplicate', async () => {
+    let sendCount = 0;
+    const dashboard = createDashboardPresenter({
+        sendMessage: async () => ({ message_id: ++sendCount }),
+        editMessageText: async () => {
+            throw Object.assign(new Error('message is not modified'), {
+                description: 'Bad Request: message is not modified'
+            });
+        }
+    });
+
+    assert.deepEqual(await dashboard.present(123, null, 'Same', new InlineKeyboard()), { message_id: 1 });
+    assert.deepEqual(await dashboard.present(123, null, 'Same', new InlineKeyboard()), { message_id: 1 });
+    assert.equal(sendCount, 1);
+});
+
+test('dashboard replaces an uneditable control message, but surfaces other API errors', async () => {
+    let sendCount = 0;
+    let shouldFail = true;
+    const dashboard = createDashboardPresenter({
+        sendMessage: async () => ({ message_id: ++sendCount + 100 }),
+        editMessageText: async () => {
+            if (shouldFail) {
+                shouldFail = false;
+                throw Object.assign(new Error('message not found'), {
+                    description: 'Bad Request: message to edit not found'
+                });
+            }
+            throw new Error('Telegram network unavailable');
+        }
+    });
+
+    assert.deepEqual(await dashboard.present(123, null, 'First', new InlineKeyboard()), { message_id: 101 });
+    assert.deepEqual(await dashboard.present(123, null, 'Second', new InlineKeyboard()), { message_id: 102 });
+    await assert.rejects(
+        dashboard.present(123, null, 'Third', new InlineKeyboard()),
+        /network unavailable/
+    );
+    assert.equal(sendCount, 2);
 });
 
 test('target buttons show friendly names and a single active target can be replaced', () => {
@@ -195,19 +270,12 @@ test('Telegram exposes only /start and /shutdown slash commands', () => {
 
 test('confirming shutdown edits the confirmation message and removes its buttons', async () => {
     let edit;
-    let replyCount = 0;
-    await editShutdownNotice({
-        editMessageText: async (text, options) => {
-            edit = { text, options };
-        },
-        reply: async () => {
-            replyCount++;
-        }
+    await editShutdownNotice(async (text, options) => {
+        edit = { text, options };
     });
 
     assert.equal(edit.text, 'The local cekbio application is shutting down.');
     assert.deepEqual(edit.options.reply_markup.inline_keyboard, []);
-    assert.equal(replyCount, 0);
 });
 
 test('scan progress includes confirmed targets, active batch work, and terminal state', () => {
@@ -258,18 +326,35 @@ test('start menu shows Targets heading, upload action, and one full-width button
     const text = formatMainMenuText('Choose an action below.', targets[1], 0, 1, targets.length);
 
     assert.match(text, /\nTargets\n/);
+    assert.deepEqual(rows.slice(0, 3).map(row => row.map(button => button.text)), [
+        ['👤 Senders', '🔎 Scan'],
+        ['📦 Results'],
+        ['⬆️ Upload Targets']
+    ]);
     assert.ok(labels.includes('⬆️ Upload Targets'));
     assert.ok(labels.includes('business_one'));
     assert.ok(labels.includes('personal_two'));
     assert.equal(labels.at(-1), '⏻ Shutdown');
     assert.deepEqual(JSON.parse(rows.at(-1)[0].callback_data), { type: 'shutdown' });
     assert.deepEqual(rows.flat().map(button => button.style), [
-        'primary', 'primary', 'primary', 'primary', 'primary', 'danger', 'success', 'primary'
+        'primary', 'primary', 'primary', 'primary', 'danger', 'success', 'primary'
     ]);
     assert.deepEqual(rows.find(row => row[0].text === '⬆️ Upload Targets').map(button => button.text), ['⬆️ Upload Targets']);
     assert.deepEqual(rows.find(row => row[0].text === 'personal_two').map(button => button.text), ['personal_two']);
     assert.ok(labels.every(label => !/[✅◯🟢🟡⚪]/u.test(label)));
     assert.equal(labels.includes('📄 Targets'), false);
+
+    const runningKeyboard = buildMainMenuKeyboard({
+        targets,
+        activeTarget: targets[1],
+        page: 0,
+        scanStatus: 'running',
+        callbackData: payload => JSON.stringify(payload)
+    });
+    assert.equal(runningKeyboard.inline_keyboard[0][1].text, '🔎 Scan progress');
+    assert.deepEqual(JSON.parse(runningKeyboard.inline_keyboard[0][1].callback_data), {
+        type: 'scan-progress-refresh'
+    });
 
     const pagedTargets = Array.from({ length: 7 }, (_, index) => `target_${index}.txt`);
     const pagedKeyboard = buildMainMenuKeyboard({
