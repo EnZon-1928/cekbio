@@ -8,6 +8,8 @@ const ACTION_TTL_MS = 10 * 60 * 1000;
 const LIST_PAGE_SIZE = 6;
 const PAIRING_REFRESH_INTERVAL_MS = 500;
 const PAIRING_REFRESH_MAX_DURATION_MS = 185000;
+const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
+const MAX_SCAN_SENDER_DETAILS = 3;
 const BUTTON_STYLE = Object.freeze({
     primary: 'primary',
     success: 'success',
@@ -108,6 +110,19 @@ const formatSenderSessionsText = (page, pageCount, senderCount) => [
     ...(senderCount ? [] : ['', 'No sender sessions found. Add a sender from the Senders menu.'])
 ].join('\n');
 
+const limitText = (value, maxLength) => {
+    const text = String(value ?? '');
+    if (text.length <= maxLength) return text;
+    let result = '';
+    let length = 0;
+    for (const character of text) {
+        if (length + character.length > maxLength - 1) break;
+        result += character;
+        length += character.length;
+    }
+    return `${result}…`;
+};
+
 const formatScanProgress = scan => {
     if (!scan) return '🔎 Scan progress\n\nNo scan information is available.';
     const totalTargets = scan.totalTargets || 0;
@@ -123,25 +138,29 @@ const formatScanProgress = scan => {
     const lines = [
         '🔎 Scan progress',
         '',
-        `Target: ${scan.targetFile}`,
+        `Target: ${limitText(scan.targetFile, 180)}`,
         `${progressBar} ${percentage}%`,
         `Targets confirmed: ${completedTargets} / ${totalTargets}`,
         ...(activeTargets
             ? [`Currently processing: ${activeTargets} / ${Math.max(totalTargets - completedTargets, 0)}`]
             : []),
         `Batches: ${scan.completedBatches || 0} / ${scan.totalBatches || 0}`,
-        `Status: ${scan.status || 'starting'}`
+        `Status: ${limitText(scan.status || 'starting', 80)}`
     ];
 
     if (scan.status === 'starting') lines.push('', 'Checking and preparing sender sessions…');
-    for (const progress of scan.activeBatchProgress || []) {
+    const activeBatchProgress = scan.activeBatchProgress || [];
+    for (const progress of activeBatchProgress.slice(0, MAX_SCAN_SENDER_DETAILS)) {
         const batchProgress = `${progress.processedTargets || 0} / ${progress.totalTargets || 0}`;
         lines.push(
-            `${progress.folder}: batch ${(progress.batchIndex || 0) + 1}/${progress.totalBatches} · ${batchProgress} targets`
+            `${limitText(progress.folder, 100)}: batch ${(progress.batchIndex || 0) + 1}/${progress.totalBatches} · ${batchProgress} targets`
         );
         if (progress.phase && progress.phase !== 'batch complete') {
-            lines.push(`  ${progress.phase}…`);
+            lines.push(`  ${limitText(progress.phase, 100)}…`);
         }
+    }
+    if (activeBatchProgress.length > MAX_SCAN_SENDER_DETAILS) {
+        lines.push(`+${activeBatchProgress.length - MAX_SCAN_SENDER_DETAILS} more active senders`);
     }
     if (scan.senderStatuses) {
         const activeSenders = Object.values(scan.senderStatuses)
@@ -150,12 +169,17 @@ const formatScanProgress = scan => {
         const inactive = Object.entries(scan.senderStatuses)
             .filter(([, sender]) => sender.status === 'inactive')
             .map(([folder]) => folder);
-        if (inactive.length) lines.push(`Excluded: ${inactive.slice(0, 5).join(', ')}`);
+        if (inactive.length) {
+            lines.push(`Excluded: ${inactive.slice(0, 5).map(folder => limitText(folder, 60)).join(', ')}`);
+        }
     }
     if (scan.status === 'paused') lines.push('', 'Scan paused. Progress is saved; resume it from Scan.');
     if (scan.status === 'completed') lines.push('', 'Scan completed successfully.');
-    if (scan.status === 'failed' && scan.error) lines.push('', `Error: ${scan.error}`);
-    return lines.join('\n');
+    if (scan.status === 'failed' && scan.error) lines.push('', `Error: ${limitText(scan.error, 800)}`);
+    const text = lines.join('\n');
+    return text.length <= TELEGRAM_MAX_MESSAGE_LENGTH
+        ? text
+        : limitText(text, TELEGRAM_MAX_MESSAGE_LENGTH);
 };
 
 const createActiveTargetSelection = () => {
@@ -184,6 +208,25 @@ const addPairingCodeCopyButton = (keyboard, pairingCode) => {
         { text: `🔑 ${pairingCode}`, style: BUTTON_STYLE.primary },
         pairingCode
     ).row();
+    return keyboard;
+};
+
+const buildStatusKeyboard = ({ pairingCode, callbackData }) => {
+    const keyboard = new InlineKeyboard();
+    if (pairingCode) addPairingCodeCopyButton(keyboard, pairingCode);
+    keyboard.text(
+        { text: '🏠 Main menu', style: BUTTON_STYLE.primary },
+        callbackData({ type: 'main-menu' })
+    );
+    return keyboard;
+};
+
+const buildScanProgressKeyboard = callbackData => {
+    const keyboard = new InlineKeyboard();
+    keyboard.text(
+        { text: '🏠 Main menu', style: BUTTON_STYLE.primary },
+        callbackData({ type: 'main-menu' })
+    );
     return keyboard;
 };
 
@@ -456,18 +499,11 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         if (pairingCode) lines.push('Enter the code shown on the button in WhatsApp to link the sender.');
         if (sender?.error) lines.push(`Sender error: ${sender.error}`);
         if (scan?.error) lines.push(`Scan error: ${scan.error}`);
-        const keyboard = new InlineKeyboard();
-        if (pairingCode) addPairingCodeCopyButton(keyboard, pairingCode);
-        actionButton(keyboard, '↻ Refresh', { type: 'show-status' });
-        addMenuButton(keyboard).row();
+        const keyboard = buildStatusKeyboard({
+            pairingCode,
+            callbackData: registerAction
+        });
         return { text: lines.join('\n'), keyboard };
-    };
-
-    const scanProgressKeyboard = () => {
-        const keyboard = new InlineKeyboard();
-        actionButton(keyboard, '↻ Refresh', { type: 'scan-progress-refresh' });
-        addMenuButton(keyboard).row();
-        return keyboard;
     };
 
     const scheduleScanProgressRefresh = (chatId, messageId, token, lastText) => {
@@ -488,7 +524,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                         chatId,
                         messageId,
                         text,
-                        scanProgressKeyboard()
+                        buildScanProgressKeyboard(registerAction)
                     );
                     refresh.lastText = text;
                     messageId = message.message_id;
@@ -515,7 +551,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     const showScanProgress = async (ctx, scan) => {
         clearScanProgressRefresh(ctx.chat.id);
         const text = formatScanProgress(scan);
-        const result = await present(ctx, text, scanProgressKeyboard());
+        const result = await present(ctx, text, buildScanProgressKeyboard(registerAction));
         const messageId = dashboard.getMessageId(ctx.chat.id) || result?.message_id;
         if (messageId && ['starting', 'running'].includes(scan?.status)) {
             scheduleScanProgressRefresh(
@@ -550,7 +586,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 const presentation = createStatusPresentation(
                     scan,
                     sender,
-                    timedOut ? 'Automatic refresh paused. Use Refresh to check again.' : null,
+                    timedOut ? 'Automatic status updates paused.' : null,
                     !timedOut
                 );
                 const message = await dashboard.present(
@@ -1228,6 +1264,8 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
 
 module.exports = {
     addPairingCodeCopyButton,
+    buildStatusKeyboard,
+    buildScanProgressKeyboard,
     buildMainMenuKeyboard,
     buildSenderSessionsKeyboard,
     createActionRegistry,

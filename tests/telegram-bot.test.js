@@ -5,6 +5,8 @@ const { InlineKeyboard } = require('grammy');
 const {
     addPairingCodeCopyButton,
     buildMainMenuKeyboard,
+    buildScanProgressKeyboard,
+    buildStatusKeyboard,
     buildSenderSessionsKeyboard,
     createActionRegistry,
     createActiveTargetSelection,
@@ -104,6 +106,23 @@ test('pairing-code copy button copies only the code', () => {
     assert.equal(copyButton.text, '🔑 581204');
     assert.deepEqual(copyButton.copy_text, { text: '581204' });
     assert.equal(copyButton.style, 'primary');
+});
+
+test('status and progress keyboards omit manual Refresh buttons', () => {
+    const callbackData = payload => JSON.stringify(payload);
+    const statusKeyboard = buildStatusKeyboard({
+        pairingCode: '581204',
+        callbackData
+    });
+    const progressKeyboard = buildScanProgressKeyboard(callbackData);
+    const statusLabels = statusKeyboard.inline_keyboard.flat().map(button => button.text);
+    const progressLabels = progressKeyboard.inline_keyboard.flat().map(button => button.text);
+
+    assert.deepEqual(statusLabels, ['🔑 581204', '🏠 Main menu']);
+    assert.deepEqual(progressLabels, ['🏠 Main menu']);
+    assert.ok([...statusLabels, ...progressLabels].every(label => !/refresh/i.test(label)));
+    assert.deepEqual(JSON.parse(statusKeyboard.inline_keyboard[1][0].callback_data), { type: 'main-menu' });
+    assert.deepEqual(JSON.parse(progressKeyboard.inline_keyboard[0][0].callback_data), { type: 'main-menu' });
 });
 
 test('dashboard creates one control message and edits it for later updates', async () => {
@@ -313,6 +332,62 @@ test('scan progress includes confirmed targets, active batch work, and terminal 
     }), /Progress is saved; resume it from Scan/);
 });
 
+test('scan progress shows at most three sender details and reports the remainder', () => {
+    const progress = formatScanProgress({
+        status: 'running',
+        targetFile: 'targets.txt',
+        completedTargets: 20,
+        totalTargets: 100,
+        completedBatches: 2,
+        totalBatches: 10,
+        sessionFolders: ['s1', 's2', 's3', 's4', 's5'],
+        senderStatuses: Object.fromEntries(
+            ['s1', 's2', 's3', 's4', 's5'].map(folder => [folder, { status: 'scanning' }])
+        ),
+        activeBatchProgress: ['s1', 's2', 's3', 's4', 's5'].map((folder, index) => ({
+            folder,
+            batchIndex: index,
+            totalBatches: 10,
+            processedTargets: 5,
+            totalTargets: 10,
+            phase: 'checking profiles'
+        }))
+    });
+
+    assert.match(progress, /Active senders: 5 \/ 5/);
+    assert.match(progress, /s1: batch/);
+    assert.match(progress, /s3: batch/);
+    assert.doesNotMatch(progress, /s4: batch|s5: batch/);
+    assert.match(progress, /\+2 more active senders/);
+});
+
+test('scan progress remains below Telegram message limit with unusually long details', () => {
+    const progress = formatScanProgress({
+        status: 'failed',
+        targetFile: 'target'.repeat(1000),
+        completedTargets: 20,
+        totalTargets: 100,
+        completedBatches: 2,
+        totalBatches: 10,
+        error: 'failure '.repeat(2000),
+        sessionFolders: ['s1', 's2', 's3', 's4'],
+        senderStatuses: Object.fromEntries(
+            ['s1', 's2', 's3', 's4'].map(folder => [folder, { status: 'scanning' }])
+        ),
+        activeBatchProgress: ['s1', 's2', 's3', 's4'].map(folder => ({
+            folder: folder.repeat(200),
+            batchIndex: 0,
+            totalBatches: 10,
+            processedTargets: 1,
+            totalTargets: 10,
+            phase: 'phase '.repeat(200)
+        }))
+    });
+
+    assert.ok(progress.length <= 4096);
+    assert.match(progress, /Status: failed/);
+});
+
 test('start menu shows Targets heading, upload action, and one full-width button per target', () => {
     const targets = ['target_business_one.txt', 'target_personal_two.txt'];
     const keyboard = buildMainMenuKeyboard({
@@ -343,6 +418,10 @@ test('start menu shows Targets heading, upload action, and one full-width button
     assert.deepEqual(rows.find(row => row[0].text === 'personal_two').map(button => button.text), ['personal_two']);
     assert.ok(labels.every(label => !/[✅◯🟢🟡⚪]/u.test(label)));
     assert.equal(labels.includes('📄 Targets'), false);
+    assert.deepEqual(JSON.parse(rows[0][1].callback_data), { type: 'show-scan', page: 0 });
+    assert.ok(rows.some(row => row.some(button =>
+        button.callback_data && JSON.parse(button.callback_data).type === 'select-target'
+    )));
 
     const runningKeyboard = buildMainMenuKeyboard({
         targets,
