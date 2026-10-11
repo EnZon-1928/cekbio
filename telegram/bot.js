@@ -360,6 +360,18 @@ const acknowledgeCallbackQuery = async ctx => {
     if (ctx.callbackQuery) await ctx.answerCallbackQuery();
 };
 
+const acknowledgeCallbackQueryWithoutWaiting = (
+    ctx,
+    onError = error => console.error('Telegram callback acknowledgement failed:', error.message)
+) => {
+    if (!ctx.callbackQuery) return;
+    try {
+        Promise.resolve(ctx.answerCallbackQuery()).catch(onError);
+    } catch (error) {
+        onError(error);
+    }
+};
+
 const shouldProbeSenderHealth = ({ command, action } = {}) =>
     command === 'start' || (action?.type === 'show-senders' && action.probeHealth === true);
 
@@ -1151,11 +1163,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
             return;
         }
         if (ctx.callbackQuery) {
-            try {
-                await acknowledgeCallbackQuery(ctx);
-            } catch (error) {
-                console.error('Telegram callback acknowledgement failed:', error.message);
-            }
+            acknowledgeCallbackQueryWithoutWaiting(ctx);
             clearScanProgressRefresh(ctx.chat?.id);
         }
         await next();
@@ -1340,6 +1348,7 @@ module.exports = {
     getVisiblePairingCode,
     isAuthorizedUpdate,
     acknowledgeCallbackQuery,
+    acknowledgeCallbackQueryWithoutWaiting,
     shouldProbeSenderHealth,
     isPairingInProgress,
     shouldContinuePairingRefresh,

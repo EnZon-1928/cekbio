@@ -13,6 +13,7 @@ const {
     createActiveTargetSelection,
     createDashboardPresenter,
     acknowledgeCallbackQuery,
+    acknowledgeCallbackQueryWithoutWaiting,
     editShutdownNotice,
     formatSenderButtonLabel,
     formatScanProgress,
@@ -71,6 +72,36 @@ test('callback acknowledgement runs immediately when a callback update is receiv
     });
 
     assert.deepEqual(events, ['acknowledged']);
+});
+
+test('callback acknowledgement does not block while the Telegram request is pending', async () => {
+    let rejectAcknowledgement;
+    const acknowledgementError = new Error('Telegram unavailable');
+    let handledError;
+    let acknowledgementStarted = false;
+    acknowledgeCallbackQueryWithoutWaiting({
+        callbackQuery: { id: 'query-id' },
+        answerCallbackQuery: () => {
+            acknowledgementStarted = true;
+            return new Promise((resolve, reject) => { rejectAcknowledgement = reject; });
+        }
+    }, error => { handledError = error; });
+
+    assert.equal(acknowledgementStarted, true);
+    assert.equal(handledError, undefined);
+    rejectAcknowledgement(acknowledgementError);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(handledError, acknowledgementError);
+});
+
+test('callback acknowledgement reports synchronous failures without throwing', () => {
+    const acknowledgementError = new Error('Telegram unavailable');
+    let handledError;
+    assert.doesNotThrow(() => acknowledgeCallbackQueryWithoutWaiting({
+        callbackQuery: { id: 'query-id' },
+        answerCallbackQuery: () => { throw acknowledgementError; }
+    }, error => { handledError = error; }));
+    assert.equal(handledError, acknowledgementError);
 });
 
 test('sender health checks are triggered only on /start and opening Sender Sessions', () => {
