@@ -12,6 +12,7 @@ const {
     createActionRegistry,
     createActiveTargetSelection,
     createDashboardPresenter,
+    acknowledgeCallbackQuery,
     editShutdownNotice,
     formatSenderButtonLabel,
     formatScanProgress,
@@ -55,6 +56,20 @@ test('only the configured owner in a one-to-one private chat is authorized', () 
     assert.equal(isAuthorizedUpdate({ ...ownerUpdate, chat: { id: -12345, type: 'group' } }, '12345'), false);
     assert.equal(isAuthorizedUpdate({ ...ownerUpdate, chat: { id: -12345, type: 'supergroup' } }, '12345'), false);
     assert.equal(isAuthorizedUpdate({ chat: { id: 12345, type: 'private' } }, '12345'), false);
+});
+
+test('callback acknowledgement runs immediately when a callback update is received', async () => {
+    const events = [];
+    await acknowledgeCallbackQuery({
+        callbackQuery: { id: 'query-id' },
+        answerCallbackQuery: async () => events.push('acknowledged')
+    });
+    await acknowledgeCallbackQuery({
+        message: { text: '/start' },
+        answerCallbackQuery: async () => events.push('unexpected acknowledgement')
+    });
+
+    assert.deepEqual(events, ['acknowledged']);
 });
 
 test('only flat generated result text files may be sent to Telegram', () => {

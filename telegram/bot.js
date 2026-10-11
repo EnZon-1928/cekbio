@@ -356,6 +356,10 @@ const isAuthorizedUpdate = (ctx, ownerId) => Boolean(ctx.from
     && ctx.chat.id === ctx.from.id
     && String(ctx.from.id) === String(ownerId));
 
+const acknowledgeCallbackQuery = async ctx => {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery();
+};
+
 const paginateItems = (items, requestedPage, pageSize = LIST_PAGE_SIZE) => {
     if (!Number.isSafeInteger(pageSize) || pageSize < 1) throw new Error('Page size must be a positive integer.');
     const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
@@ -414,6 +418,21 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     const senderHealthErrors = new Set();
     const scanProgressRefreshes = new Map();
     const scanProgressErrors = new Set();
+
+    const scheduleSenderHealthCheck = chatId => {
+        setImmediate(() => {
+            Promise.resolve()
+                .then(() => service.getSenderHealth())
+                .then(() => senderHealthErrors.delete(String(chatId)))
+                .catch(error => {
+                    const key = String(chatId);
+                    if (!senderHealthErrors.has(key)) {
+                        senderHealthErrors.add(key);
+                        console.error('Automatic sender health check failed:', error.message);
+                    }
+                });
+        });
+    };
 
     const registerAction = (payload) => {
         return actions.create(payload);
@@ -1117,26 +1136,27 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
 
     bot.use(async (ctx, next) => {
         if (!isAuthorizedUpdate(ctx, ownerId)) {
-            if (ctx.callbackQuery) await ctx.answerCallbackQuery();
+            try {
+                await acknowledgeCallbackQuery(ctx);
+            } catch (error) {
+                console.error('Telegram callback acknowledgement failed:', error.message);
+            }
             return;
         }
-        if (ctx.callbackQuery) clearScanProgressRefresh(ctx.chat?.id);
-        try {
-            await service.getSenderHealth();
-            senderHealthErrors.delete(String(ctx.chat?.id));
-        } catch (error) {
-            const chatId = String(ctx.chat?.id);
-            if (!senderHealthErrors.has(chatId)) {
-                senderHealthErrors.add(chatId);
-                console.error('Automatic sender health check failed:', error.message);
+        if (ctx.callbackQuery) {
+            try {
+                await acknowledgeCallbackQuery(ctx);
+            } catch (error) {
+                console.error('Telegram callback acknowledgement failed:', error.message);
             }
+            clearScanProgressRefresh(ctx.chat?.id);
         }
+        scheduleSenderHealthCheck(ctx.chat?.id);
         await next();
     });
 
     bot.callbackQuery(/^a:/, async ctx => {
         const action = actions.consume(ctx.callbackQuery.data);
-        await ctx.answerCallbackQuery();
         if (!action) {
             await showMainMenu(ctx, 'That button expired. Please choose an option again.');
             return;
@@ -1149,8 +1169,6 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
             await showMainMenu(ctx, error.message || 'The operation could not be completed.');
         }
     });
-    bot.callbackQuery('noop', async ctx => ctx.answerCallbackQuery());
-
     bot.command('start', async ctx => {
         pendingBatchSizes.delete(String(ctx.from.id));
         pendingSenderNumbers.delete(String(ctx.from.id));
@@ -1312,6 +1330,7 @@ module.exports = {
     getTargetDisplayName,
     getVisiblePairingCode,
     isAuthorizedUpdate,
+    acknowledgeCallbackQuery,
     isPairingInProgress,
     shouldContinuePairingRefresh,
     isResultFilename,
