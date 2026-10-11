@@ -18,7 +18,6 @@
 
 - Do not expose sender credentials, sessions, targets, or results remotely.
 - Validate uploaded filenames, request input, and filesystem operations. Keep sender deletion explicit and confirmed.
-- Keep internal `target_*` JSON results on disk for recovery; do not list or send them through Telegram.
 - A Telegram shutdown action may stop only the local Node.js application, never the operating system; require confirmation and refuse shutdown while a scan or sender operation is active.
 - Do not copy, log, or expose WhatsApp session credentials, Telegram tokens, or target data unnecessarily.
 - Keep `.env` private and out of version control.
