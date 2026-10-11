@@ -230,7 +230,7 @@ const buildStatusKeyboard = ({ pairingCode, callbackData }) => {
 
 const formatResultButtonLabel = filename => {
     const match = typeof filename === 'string' ? filename.match(RESULT_PATTERN) : null;
-    return match ? `${match[2]}.txt` : String(filename);
+    return match ? `${match[1]} ${match[2].replace(/_/g, ' ')}` : String(filename);
 };
 
 const buildConfirmationKeyboard = (callbackData, action, returnTo) => {

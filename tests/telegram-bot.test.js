@@ -181,7 +181,7 @@ test('result filename buttons send files directly while Remove remains separatel
     const buttons = keyboard.inline_keyboard.flat();
 
     assert.deepEqual(buttons.map(button => button.text), [
-        'targets.txt',
+        'personal targets',
         'Remove',
         '⬅️ Previous',
         'Next ➡️',
@@ -204,8 +204,10 @@ test('result filename buttons send files directly while Remove remains separatel
     });
     assert.equal(buttons[1].style, 'danger');
     assert.ok(!buttons.some(button => ['Send file', 'Send result file'].includes(button.text)));
-    assert.equal(formatResultButtonLabel('result_business_targets.txt'), 'targets.txt');
-    assert.equal(formatResultButtonLabel('result_unregistered_my targets.txt'), 'my targets.txt');
+    assert.equal(formatResultButtonLabel('result_business_target_list.txt'), 'business target list');
+    assert.equal(formatResultButtonLabel('result_personal_targets.txt'), 'personal targets');
+    assert.equal(formatResultButtonLabel('result_unregistered_my_targets.txt'), 'unregistered my targets');
+    assert.equal(formatResultButtonLabel('not-a-result.txt'), 'not-a-result.txt');
 
     const confirmation = buildConfirmationKeyboard(
         payload => JSON.stringify(payload),
@@ -252,8 +254,8 @@ test('completed scan progress exposes paginated direct result download buttons',
     const secondButtons = secondPage.inline_keyboard.flat();
 
     assert.deepEqual(firstButtons.map(button => button.text), [
-        'target_1.txt', 'target_2.txt', 'target_3.txt',
-        'target_4.txt', 'target_5.txt', 'target_6.txt',
+        'business target 1', 'business target 2', 'business target 3',
+        'business target 4', 'business target 5', 'business target 6',
         'Next ➡️', '🏠 Main menu'
     ]);
     assert.deepEqual(JSON.parse(firstButtons[0].callback_data), {
@@ -262,7 +264,7 @@ test('completed scan progress exposes paginated direct result download buttons',
         page: 0
     });
     assert.deepEqual(secondButtons.map(button => button.text), [
-        'target_7.txt',
+        'business target 7',
         '⬅️ Previous',
         '🏠 Main menu'
     ]);
