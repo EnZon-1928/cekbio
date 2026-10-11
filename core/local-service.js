@@ -11,6 +11,11 @@ const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const MAX_WORKSHEET_CELLS = 1_000_000;
 const SESSION_PATTERN = /^session_[^/\\\u0000-\u001f]+$/;
 const RESULT_PATTERN = /^result_(business|personal|unregistered)_(.+)\.txt$/;
+const isValidResultFilename = filename => typeof filename === 'string'
+    && path.basename(filename) === filename
+    && !filename.includes('/') && !filename.includes('\\')
+    && !/[\u0000-\u001f\u007f]/.test(filename)
+    && RESULT_PATTERN.test(filename);
 
 const createError = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 
@@ -123,7 +128,7 @@ const createLocalService = ({
     };
 
     const listResults = () => fs.readdirSync(root, { withFileTypes: true })
-        .filter(entry => entry.isFile() && RESULT_PATTERN.test(entry.name) && hasResultData(entry.name))
+        .filter(entry => entry.isFile() && isValidResultFilename(entry.name) && hasResultData(entry.name))
         .map(entry => entry.name)
         .sort();
 
@@ -302,11 +307,15 @@ const createLocalService = ({
             throw createError('Results cannot be removed while a scan is in progress.', 409);
         }
         if (confirm !== true) throw createError('Explicit confirmation is required to remove a result.');
-        if (!RESULT_PATTERN.test(filename) || !listResults().includes(filename)) {
+        if (!isValidResultFilename(filename) || !listResults().includes(filename)) {
             throw createError('Result not found.', 404);
         }
+        const [, , targetName] = RESULT_PATTERN.exec(filename);
+        const checkpointPath = resolveInRoot(`checkpoint_${targetName}.json`);
+        const checkpointDeleted = fs.existsSync(checkpointPath);
         fs.unlinkSync(resolveInRoot(filename));
-        return { deleted: filename };
+        if (checkpointDeleted) fs.unlinkSync(checkpointPath);
+        return { deleted: filename, checkpointDeleted };
     };
 
     const deleteSender = async (folder, { confirm } = {}) => {
@@ -435,7 +444,7 @@ const createLocalService = ({
         deleteSender,
         deleteTarget,
         getResultPath(filename) {
-            if (!RESULT_PATTERN.test(filename) || !listResults().includes(filename)) {
+            if (!isValidResultFilename(filename) || !listResults().includes(filename)) {
                 throw createError('Result not found.', 404);
             }
             return resolveInRoot(filename);

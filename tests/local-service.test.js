@@ -129,21 +129,47 @@ test('result listing hides internal JSON and deletion requires explicit confirma
         fs.writeFileSync(path.join(root, 'result_business_targets.txt'), 'result');
         fs.writeFileSync(path.join(root, 'target_personal_targets.json'), '[{"number":"628123456789"}]');
         fs.writeFileSync(path.join(root, 'result_personal_targets.txt'), 'result');
+        fs.writeFileSync(path.join(root, 'target_unregistered_targets.json'), '[{"number":"628123456780"}]');
+        fs.writeFileSync(path.join(root, 'result_unregistered_targets.txt'), 'result');
+        fs.writeFileSync(path.join(root, 'checkpoint_targets.json'), '{"batchIndex":1}');
         const service = createLocalService({ root });
 
-        assert.deepEqual(service.getResults(), { results: ['result_personal_targets.txt'] });
+        assert.deepEqual(service.getResults(), {
+            results: ['result_personal_targets.txt', 'result_unregistered_targets.txt']
+        });
         assert.throws(
             () => service.deleteResult('result_personal_targets.txt'),
             /confirmation is required/
         );
         assert.deepEqual(
             service.deleteResult('result_personal_targets.txt', { confirm: true }),
-            { deleted: 'result_personal_targets.txt' }
+            { deleted: 'result_personal_targets.txt', checkpointDeleted: true }
+        );
+        assert.equal(fs.existsSync(path.join(root, 'checkpoint_targets.json')), false);
+        assert.equal(fs.existsSync(path.join(root, 'result_unregistered_targets.txt')), true);
+        assert.deepEqual(service.getResults(), { results: ['result_unregistered_targets.txt'] });
+        assert.throws(
+            () => service.deleteResult('../result_unregistered_targets.txt', { confirm: true }),
+            /not found/
         );
         assert.throws(
             () => service.getResultPath('../result_personal_targets.txt'),
             /not found/
         );
+    });
+});
+
+test('result listing re-reads result files and internal findings from disk on every call', async t => {
+    await withTemporaryRoot(t, root => {
+        const service = createLocalService({ root });
+        assert.deepEqual(service.getResults(), { results: [] });
+
+        fs.writeFileSync(path.join(root, 'target_personal_new.json'), '[{"number":"628123456789"}]');
+        fs.writeFileSync(path.join(root, 'result_personal_new.txt'), 'result');
+        assert.deepEqual(service.getResults(), { results: ['result_personal_new.txt'] });
+
+        fs.unlinkSync(path.join(root, 'result_personal_new.txt'));
+        assert.deepEqual(service.getResults(), { results: [] });
     });
 });
 

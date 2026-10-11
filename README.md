@@ -93,7 +93,7 @@ The bot keeps one control dashboard message per chat while the process is runnin
 
 The **Shutdown** button asks for confirmation. Confirming removes the confirmation buttons and leaves a shutdown notice visible while the local application stops. Shutdown affects only the cekbio process, never the operating system, and is refused while a scan or sender operation is active.
 
-The bot can explicitly send generated `result_*.txt` files to your private chat. It never sends target files, internal result JSON, or WhatsApp session data.
+Open **Results** to refresh the list from local files. Tap a result filename to send that `.txt` file to your private chat immediately; **Remove** is a separate action that always asks for confirmation and also removes the checkpoint for that result's target, if one exists. Removing a result does not remove other result categories for the same target. The bot never sends target files, internal result JSON, or WhatsApp session data.
 
 ## Choose your platform
 

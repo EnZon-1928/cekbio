@@ -307,6 +307,31 @@ const buildSenderSessionsKeyboard = ({ senders, statuses, page, pageCount, callb
     return keyboard;
 };
 
+const buildResultsKeyboard = ({ results, page, pageCount, callbackData }) => {
+    const keyboard = new InlineKeyboard();
+    const addButton = (label, payload, style = BUTTON_STYLE.primary) =>
+        keyboard.text(
+            { text: [...String(label)].slice(0, 60).join(''), style },
+            callbackData(payload)
+        );
+
+    for (const filename of results) {
+        addButton(filename, { type: 'send-result', filename, page });
+        addButton('Remove', {
+            type: 'confirm',
+            action: { type: 'delete-result', filename },
+            returnTo: { type: 'show-results', page }
+        }, BUTTON_STYLE.danger).row();
+    }
+    if (pageCount > 1) {
+        if (page > 0) addButton('⬅️ Previous', { type: 'show-results', page: page - 1 });
+        if (page + 1 < pageCount) addButton('Next ➡️', { type: 'show-results', page: page + 1 });
+        keyboard.row();
+    }
+    addButton('🏠 Main menu', { type: 'main-menu' });
+    return keyboard;
+};
+
 const formatMainMenuText = (message, activeTarget, page, pageCount, targetCount) => {
     const targetStatus = activeTarget
         ? `Active target: ${getTargetDisplayName(activeTarget)}`
@@ -677,14 +702,26 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 if (messageId) scheduleSenderViewRefresh(ctx.chat.id, messageId, page);
             }
             return result;
+        } else if (kind === 'results') {
+            const text = items.length
+                ? `${config.heading} · page ${page + 1} of ${pageCount}${message ? `\n\n${message}` : ''}`
+                : `${config.heading}\n\n${message ? `${message}\n\n` : ''}No results with findings are available yet.`;
+            return present(
+                ctx,
+                text,
+                buildResultsKeyboard({
+                    results: visibleItems,
+                    page,
+                    pageCount,
+                    callbackData: registerAction
+                })
+            );
         } else if (kind === 'targets') {
             actionButton(keyboard, '⬆️ Upload Targets', { type: 'upload-targets', page }).row();
         }
         visibleItems.forEach(item => {
             if (kind === 'targets') {
                 actionButton(keyboard, item, { type: 'target-details', filename: item, page });
-            } else if (kind === 'results') {
-                actionButton(keyboard, item, { type: 'result-details', filename: item, page });
             }
             keyboard.row();
             if (kind === 'targets') {
@@ -692,13 +729,6 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                     type: 'confirm',
                     action: { type: 'delete-target', filename: item },
                     returnTo: { type: 'show-targets', page }
-                }).row();
-            } else if (kind === 'results') {
-                actionButton(keyboard, 'Send file', { type: 'send-result', filename: item });
-                actionButton(keyboard, 'Remove', {
-                    type: 'confirm',
-                    action: { type: 'delete-result', filename: item },
-                    returnTo: { type: 'show-results', page }
                 }).row();
             }
         });
@@ -710,14 +740,10 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         }
         addMenuButton(keyboard).row();
 
-        const emptyMessage = kind === 'results'
-            ? 'No results with findings are available yet.'
-            : 'Send a .txt or .xlsx document to this chat using Upload Targets.';
+        const emptyMessage = 'Send a .txt or .xlsx document to this chat using Upload Targets.';
         const text = kind === 'targets'
             ? `${config.heading}\n\n${message ? `${message}\n` : ''}${items.length ? 'Choose a target to manage it. Select the active target from the main menu.' : emptyMessage}${pageCount > 1 ? `\nPage ${page + 1} of ${pageCount}` : ''}`
-            : items.length
-                ? `${config.heading} · page ${page + 1} of ${pageCount}`
-                : `${config.heading}\n\n${emptyMessage}`;
+            : `${config.heading}\n\n${emptyMessage}`;
         const result = await present(ctx, text, keyboard);
         return result;
     };
@@ -768,26 +794,15 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         senderViewRefreshes.set(chatId, refresh);
     };
 
-    const showItemDetails = async (ctx, kind, item, page) => {
+    const showTargetDetails = async (ctx, item, page) => {
         const keyboard = new InlineKeyboard();
-        let text;
-        if (kind === 'target') {
-            text = `Target list\n${item}`;
-            actionButton(keyboard, 'Remove target', {
-                type: 'confirm',
-                action: { type: 'delete-target', filename: item },
-                returnTo: { type: 'show-targets', page }
-            }).row();
-        } else {
-            text = `Scan result\n${item}`;
-            actionButton(keyboard, 'Send result file', { type: 'send-result', filename: item });
-            actionButton(keyboard, 'Remove result', {
-                type: 'confirm',
-                action: { type: 'delete-result', filename: item },
-                returnTo: { type: 'show-results', page }
-            }).row();
-        }
-        actionButton(keyboard, '⬅️ Back to list', { type: `show-${kind === 'target' ? 'targets' : 'results'}`, page });
+        const text = `Target list\n${item}`;
+        actionButton(keyboard, 'Remove target', {
+            type: 'confirm',
+            action: { type: 'delete-target', filename: item },
+            returnTo: { type: 'show-targets', page }
+        }).row();
+        actionButton(keyboard, '⬅️ Back to list', { type: 'show-targets', page });
         addMenuButton(keyboard).row();
         return present(ctx, text, keyboard);
     };
@@ -941,12 +956,19 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 if (!action.suppressMenu) await showMainMenu(ctx, `Target list ${action.filename} and its checkpoint were removed.`);
                 return;
             case 'delete-result':
-                service.deleteResult(action.filename, { confirm: true });
-                if (!action.suppressMenu) await showMainMenu(ctx, `Result ${action.filename} was removed.`);
-                return;
+                {
+                    const result = service.deleteResult(action.filename, { confirm: true });
+                    if (!action.suppressMenu) {
+                        const checkpointMessage = result.checkpointDeleted
+                            ? ' Its checkpoint was also removed.'
+                            : '';
+                        await showMainMenu(ctx, `Result ${action.filename} was removed.${checkpointMessage}`);
+                    }
+                    return result;
+                }
             case 'send-result':
                 await sendResults(ctx, action.filename);
-                await showMainMenu(ctx, `${action.filename} was sent.`);
+                await showCollection(ctx, 'results', action.page, `${action.filename} was sent.`);
                 return;
             case 'show-status':
                 await showStatus(ctx);
@@ -969,7 +991,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 await showCollection(ctx, 'targets', action.page);
                 return;
             case 'show-results':
-                await showCollection(ctx, 'results', action.page);
+                await showCollection(ctx, 'results', action.page, action.message);
                 return;
             case 'show-scan':
                 await beginScanForActiveTarget(ctx);
@@ -1018,10 +1040,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 return;
             }
             case 'target-details':
-                await showItemDetails(ctx, 'target', action.filename, action.page);
-                return;
-            case 'result-details':
-                await showItemDetails(ctx, 'result', action.filename, action.page);
+                await showTargetDetails(ctx, action.filename, action.page);
                 return;
             case 'show-scan-batches':
                 pendingBatchSizes.delete(String(ctx.from.id));
@@ -1062,8 +1081,18 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                     await shutdownLocalApplication(ctx);
                     return;
                 }
-                await performAction(ctx, { ...action.action, suppressMenu: true });
-                if (action.returnTo) await performAction(ctx, action.returnTo);
+                {
+                    const result = await performAction(ctx, { ...action.action, suppressMenu: true });
+                    if (action.returnTo) {
+                        const returnTo = { ...action.returnTo };
+                        if (action.action.type === 'delete-result') {
+                            returnTo.message = result.checkpointDeleted
+                                ? `Result ${action.action.filename} and its checkpoint were removed.`
+                                : `Result ${action.action.filename} was removed.`;
+                        }
+                        await performAction(ctx, returnTo);
+                    }
+                }
                 return;
             case 'cancel':
                 pendingBatchSizes.delete(String(ctx.from.id));
@@ -1267,6 +1296,7 @@ module.exports = {
     buildStatusKeyboard,
     buildScanProgressKeyboard,
     buildMainMenuKeyboard,
+    buildResultsKeyboard,
     buildSenderSessionsKeyboard,
     createActionRegistry,
     createActiveTargetSelection,

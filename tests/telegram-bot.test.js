@@ -7,6 +7,7 @@ const {
     buildMainMenuKeyboard,
     buildScanProgressKeyboard,
     buildStatusKeyboard,
+    buildResultsKeyboard,
     buildSenderSessionsKeyboard,
     createActionRegistry,
     createActiveTargetSelection,
@@ -106,6 +107,37 @@ test('pairing-code copy button copies only the code', () => {
     assert.equal(copyButton.text, '🔑 581204');
     assert.deepEqual(copyButton.copy_text, { text: '581204' });
     assert.equal(copyButton.style, 'primary');
+});
+
+test('result filename buttons send files directly while Remove remains separately confirmed', () => {
+    const keyboard = buildResultsKeyboard({
+        results: ['result_personal_targets.txt'],
+        page: 1,
+        pageCount: 3,
+        callbackData: payload => JSON.stringify(payload)
+    });
+    const buttons = keyboard.inline_keyboard.flat();
+
+    assert.deepEqual(buttons.map(button => button.text), [
+        'result_personal_targets.txt',
+        'Remove',
+        '⬅️ Previous',
+        'Next ➡️',
+        '🏠 Main menu'
+    ]);
+    assert.deepEqual(JSON.parse(buttons[0].callback_data), {
+        type: 'send-result',
+        filename: 'result_personal_targets.txt',
+        page: 1
+    });
+    assert.equal(buttons[0].style, 'primary');
+    assert.deepEqual(JSON.parse(buttons[1].callback_data), {
+        type: 'confirm',
+        action: { type: 'delete-result', filename: 'result_personal_targets.txt' },
+        returnTo: { type: 'show-results', page: 1 }
+    });
+    assert.equal(buttons[1].style, 'danger');
+    assert.ok(!buttons.some(button => ['Send file', 'Send result file'].includes(button.text)));
 });
 
 test('status and progress keyboards omit manual Refresh buttons', () => {
