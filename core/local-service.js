@@ -148,6 +148,8 @@ const createLocalService = ({
         return { targets, checkpoints };
     };
 
+    const getTargetNames = () => listTargets();
+
     const getSenderHealth = async ({ probe = true, wait = false } = {}) => {
         const senders = listSenders();
         for (const folder of senderHealth.keys()) {
@@ -453,6 +455,7 @@ const createLocalService = ({
         getSenderHealth,
         getSenders: () => ({ senders: listSenders() }),
         getStatus,
+        getTargetNames,
         getTargets,
         requestShutdown,
         startScan,

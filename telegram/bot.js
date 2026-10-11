@@ -506,7 +506,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     const showMainMenu = async (ctx, message = 'What would you like to do?', page = 0) => {
         clearSenderViewRefresh(ctx.chat?.id);
         if (ctx.chat?.id) clearPairingRefresh(ctx.chat.id);
-        const { targets } = service.getTargets();
+        const targets = service.getTargetNames();
         const { scan } = service.getStatus();
         const activeTarget = activeTargetSelection.reconcile(targets);
         const { page: currentPage, pageCount } = paginateItems(targets, page);
@@ -687,7 +687,11 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         clearSenderViewRefresh(ctx.chat?.id);
         const config = {
             senders: { list: service.getSenders, key: 'senders', heading: '👤 Sender sessions' },
-            targets: { list: service.getTargets, key: 'targets', heading: 'Targets' },
+            targets: {
+                list: () => ({ targets: service.getTargetNames() }),
+                key: 'targets',
+                heading: 'Targets'
+            },
             results: { list: service.getResults, key: 'results', heading: '📦 Scan results' }
         }[kind];
         if (!config) throw new Error('This list is not available.');
@@ -1040,7 +1044,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 return;
             }
             case 'select-target': {
-                const { targets } = service.getTargets();
+                const targets = service.getTargetNames();
                 activeTargetSelection.select(action.filename, targets);
                 if (action.returnToMain) {
                     await showMainMenu(

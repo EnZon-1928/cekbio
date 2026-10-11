@@ -14,6 +14,21 @@ const withTemporaryRoot = async (t, run) => {
     await run(root);
 };
 
+test('target name lookup avoids checkpoint data while full lookup retains it for scans', async t => {
+    await withTemporaryRoot(t, root => {
+        fs.writeFileSync(path.join(root, 'target_list.txt'), '628123456789\n');
+        fs.writeFileSync(path.join(root, 'result_business_list.txt'), 'result');
+        fs.writeFileSync(path.join(root, 'checkpoint_list.json'), '{"batchIndex":2}');
+        const service = createLocalService({ root });
+
+        assert.deepEqual(service.getTargetNames(), ['target_list.txt']);
+        assert.deepEqual(service.getTargets(), {
+            targets: ['target_list.txt'],
+            checkpoints: { 'target_list.txt': { batchIndex: 2 } }
+        });
+    });
+});
+
 test('target uploads validate filenames, reject overwrites, and convert XLSX numbers', async t => {
     await withTemporaryRoot(t, root => {
         const service = createLocalService({ root });
