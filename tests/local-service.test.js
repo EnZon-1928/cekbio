@@ -234,7 +234,6 @@ test('update requires confirmation and prevents new operations until it finishes
             },
             onRestart: async () => { restarts++; }
         });
-
         await assert.rejects(service.applyUpdate(), /confirmation is required/);
         const applying = service.applyUpdate({ confirm: true });
         await new Promise(resolve => setImmediate(resolve));
@@ -271,5 +270,37 @@ test('update requires confirmation and prevents new operations until it finishes
         );
         await service.restartApplication();
         assert.equal(restarts, 1);
+    });
+});
+
+test('update availability reads cached state and refreshes without blocking operations', async t => {
+    await withTemporaryRoot(t, async root => {
+        let checks = 0;
+        const cachedHint = { updateAvailable: true, checkedAt: Date.now() };
+        const service = createLocalService({
+            root,
+            updateManager: {
+                checkForUpdates: async () => ({ updateAvailable: true }),
+                applyUpdate: async () => ({ updated: false }),
+                getCachedUpdateHint: () => cachedHint,
+                refreshUpdateHint: async () => {
+                    checks++;
+                    return cachedHint;
+                }
+            }
+        });
+
+        assert.equal(service.getUpdateAvailability(), true);
+        assert.deepEqual(await service.refreshUpdateHint(), cachedHint);
+        assert.equal(checks, 1);
+
+        const previousEngineState = state.isEngineRunning;
+        state.isEngineRunning = true;
+        try {
+            assert.deepEqual(await service.refreshUpdateHint(), cachedHint);
+            assert.equal(checks, 1);
+        } finally {
+            state.isEngineRunning = previousEngineState;
+        }
     });
 });

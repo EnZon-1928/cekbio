@@ -3,11 +3,13 @@ const { execFile, spawn } = require('child_process');
 const UPDATE_REPOSITORY = 'https://github.com/EnZon-1928/cekbio.git';
 const UPDATE_BRANCH = 'telegram_bot';
 const GIT_TIMEOUT_MS = 10 * 60 * 1000;
+const LIGHTWEIGHT_GIT_TIMEOUT_MS = 15 * 1000;
+const UPDATE_HINT_CACHE_MS = 15 * 60 * 1000;
 
-const runGitCommand = (root, args) => new Promise((resolve, reject) => {
+const runGitCommand = (root, args, timeout = GIT_TIMEOUT_MS) => new Promise((resolve, reject) => {
     execFile('git', ['-C', root, ...args], {
         encoding: 'utf8',
-        timeout: GIT_TIMEOUT_MS,
+        timeout,
         windowsHide: true,
         maxBuffer: 1024 * 1024
     }, (error, stdout, stderr) => {
@@ -44,13 +46,22 @@ const isExitCode = (error, code) => error?.code === code;
 
 const createUpdateManager = ({
     root = process.cwd(),
-    runGit = args => runGitCommand(root, args),
-    installDependencies = () => runNpmInstall(root)
+    runGit,
+    runGitLightweight,
+    installDependencies = () => runNpmInstall(root),
+    now = Date.now
 } = {}) => {
+    const executeGit = runGit || (args => runGitCommand(root, args));
+    const executeLightweightGit = runGitLightweight
+        || runGit
+        || (args => runGitCommand(root, args, LIGHTWEIGHT_GIT_TIMEOUT_MS));
+    let updateHint = null;
+    let updateHintPromise = null;
+
     const ensureExpectedBranch = async () => {
         let branch;
         try {
-            branch = await runGit(['rev-parse', '--abbrev-ref', 'HEAD']);
+            branch = await executeGit(['rev-parse', '--abbrev-ref', 'HEAD']);
         } catch (error) {
             throw new Error(`Could not identify the current Git branch: ${error.message}`);
         }
@@ -61,7 +72,7 @@ const createUpdateManager = ({
 
     const ensureTrackedFilesClean = async () => {
         try {
-            await runGit(['diff', '--quiet', 'HEAD', '--']);
+            await executeGit(['diff', '--quiet', 'HEAD', '--']);
         } catch (error) {
             if (isExitCode(error, 1)) {
                 throw new Error('Tracked files have local changes. Preserve or commit them before updating.');
@@ -74,7 +85,7 @@ const createUpdateManager = ({
         await ensureExpectedBranch();
         await ensureTrackedFilesClean();
         try {
-            await runGit([
+            await executeGit([
                 'fetch',
                 '--no-tags',
                 UPDATE_REPOSITORY,
@@ -88,15 +99,15 @@ const createUpdateManager = ({
         let latestCommit;
         try {
             [currentCommit, latestCommit] = await Promise.all([
-                runGit(['rev-parse', 'HEAD']),
-                runGit(['rev-parse', 'FETCH_HEAD'])
+                executeGit(['rev-parse', 'HEAD']),
+                executeGit(['rev-parse', 'FETCH_HEAD'])
             ]);
         } catch (error) {
             throw new Error(`Could not read update versions from Git: ${error.message}`);
         }
 
         try {
-            await runGit(['merge-base', '--is-ancestor', 'HEAD', 'FETCH_HEAD']);
+            await executeGit(['merge-base', '--is-ancestor', 'HEAD', 'FETCH_HEAD']);
         } catch (error) {
             if (isExitCode(error, 1)) {
                 throw new Error('The local branch has diverged from the official branch. No files were changed.');
@@ -106,7 +117,7 @@ const createUpdateManager = ({
 
         let commitsBehind;
         try {
-            const output = await runGit(['rev-list', '--count', 'HEAD..FETCH_HEAD']);
+            const output = await executeGit(['rev-list', '--count', 'HEAD..FETCH_HEAD']);
             commitsBehind = Number(output);
             if (!Number.isSafeInteger(commitsBehind) || commitsBehind < 0) {
                 throw new Error('Git returned an invalid update count.');
@@ -123,6 +134,60 @@ const createUpdateManager = ({
         return { ...status, updateAvailable: status.commitsBehind > 0 };
     };
 
+    const inspectUpdateHint = async () => {
+        const branch = await executeLightweightGit(['rev-parse', '--abbrev-ref', 'HEAD']);
+        if (branch !== UPDATE_BRANCH) {
+            return { updateAvailable: false, branch, checkedAt: now() };
+        }
+
+        const [currentCommit, remoteOutput] = await Promise.all([
+            executeLightweightGit(['rev-parse', 'HEAD']),
+            executeLightweightGit([
+                'ls-remote',
+                '--exit-code',
+                '--refs',
+                UPDATE_REPOSITORY,
+                `refs/heads/${UPDATE_BRANCH}`
+            ])
+        ]);
+        const [remoteCommit, remoteRef] = remoteOutput.split(/\s+/);
+        if (!/^[a-f0-9]{40,64}$/i.test(remoteCommit || '')
+            || remoteRef !== `refs/heads/${UPDATE_BRANCH}`) {
+            throw new Error('The official branch returned an invalid commit reference.');
+        }
+        return {
+            updateAvailable: currentCommit.toLowerCase() !== remoteCommit.toLowerCase(),
+            branch: UPDATE_BRANCH,
+            checkedAt: now()
+        };
+    };
+
+    const refreshUpdateHint = () => {
+        if (updateHint && now() - updateHint.checkedAt < UPDATE_HINT_CACHE_MS) {
+            return Promise.resolve(updateHint);
+        }
+        if (updateHintPromise) return updateHintPromise;
+
+        updateHintPromise = inspectUpdateHint()
+            .then(status => {
+                updateHint = status;
+                return status;
+            })
+            .catch(error => {
+                updateHint = {
+                    updateAvailable: false,
+                    branch: UPDATE_BRANCH,
+                    checkedAt: now(),
+                    error
+                };
+                throw error;
+            })
+            .finally(() => {
+                updateHintPromise = null;
+            });
+        return updateHintPromise;
+    };
+
     const applyUpdate = async () => {
         const status = await inspect();
         if (status.commitsBehind === 0) {
@@ -131,7 +196,7 @@ const createUpdateManager = ({
 
         let dependenciesChanged = false;
         try {
-            await runGit([
+            await executeGit([
                 'diff',
                 '--quiet',
                 'HEAD',
@@ -146,7 +211,7 @@ const createUpdateManager = ({
         }
 
         try {
-            await runGit(['merge', '--ff-only', 'FETCH_HEAD']);
+            await executeGit(['merge', '--ff-only', 'FETCH_HEAD']);
         } catch (error) {
             throw new Error(`Could not fast-forward to the official update. No local changes were reset: ${error.message}`);
         }
@@ -162,11 +227,20 @@ const createUpdateManager = ({
         return { ...status, updateAvailable: true, updated: true, dependenciesInstalled: dependenciesChanged };
     };
 
-    return { checkForUpdates, applyUpdate };
+    return {
+        applyUpdate,
+        checkForUpdates,
+        getCachedUpdateHint: () => updateHint
+            && now() - updateHint.checkedAt < UPDATE_HINT_CACHE_MS
+            ? updateHint
+            : null,
+        refreshUpdateHint
+    };
 };
 
 module.exports = {
     createUpdateManager,
     UPDATE_BRANCH,
-    UPDATE_REPOSITORY
+    UPDATE_REPOSITORY,
+    UPDATE_HINT_CACHE_MS
 };

@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const path = require('path');
 const { Bot, InlineKeyboard, InputFile } = require('grammy');
+const { UPDATE_HINT_CACHE_MS } = require('../core/update-manager');
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const RESULT_PATTERN = /^result_(business|personal|unregistered)_(.+)\.txt$/;
@@ -285,7 +286,14 @@ const getVisiblePairingCode = sender =>
         ? sender.pairingCode
         : null;
 
-const buildMainMenuKeyboard = ({ targets, activeTarget, page, callbackData, scanStatus }) => {
+const buildMainMenuKeyboard = ({
+    targets,
+    activeTarget,
+    page,
+    callbackData,
+    scanStatus,
+    updateAvailable = false
+}) => {
     const keyboard = new InlineKeyboard();
     const { page: currentPage, pageCount, items } = paginateItems(targets, page);
     const addButton = (label, payload, style = BUTTON_STYLE.primary) =>
@@ -320,7 +328,9 @@ const buildMainMenuKeyboard = ({ targets, activeTarget, page, callbackData, scan
         }
         keyboard.row();
     }
-    addButton('⬆️ Check for updates', { type: 'check-for-updates' }).row();
+    if (updateAvailable) {
+        addButton('⬆️ Update available', { type: 'check-for-updates' }).row();
+    }
     addButton('⏻ Shutdown', { type: 'shutdown' });
     return keyboard;
 };
@@ -473,6 +483,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     const senderViewRefreshes = new Map();
     const senderViewTokens = new Map();
     const senderHealthErrors = new Set();
+    let updateHintRefreshTimer = null;
     const scanProgressRefreshes = new Map();
     const scanProgressErrors = new Set();
 
@@ -542,13 +553,21 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         if (clearErrors) pairingRefreshErrors.delete(chatId);
     };
 
+    const refreshUpdateHint = () => {
+        if (typeof service.refreshUpdateHint !== 'function') return;
+        service.refreshUpdateHint().catch(error => {
+            console.error('Background update availability check failed:', error.message);
+        });
+    };
+
     const mainMenuKeyboard = (targets, activeTarget, page, scanStatus) => {
         return buildMainMenuKeyboard({
             targets,
             activeTarget,
             page,
             callbackData: registerAction,
-            scanStatus
+            scanStatus,
+            updateAvailable: service.getUpdateAvailability?.() === true
         });
     };
 
@@ -558,6 +577,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     };
 
     const showMainMenu = async (ctx, message = 'What would you like to do?', page = 0) => {
+        refreshUpdateHint();
         clearSenderViewRefresh(ctx.chat?.id);
         if (ctx.chat?.id) clearPairingRefresh(ctx.chat.id);
         const targets = service.getTargetNames();
@@ -1401,9 +1421,15 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     });
     polling.catch(() => onError());
 
+    refreshUpdateHint();
+    updateHintRefreshTimer = setInterval(refreshUpdateHint, UPDATE_HINT_CACHE_MS);
+    updateHintRefreshTimer.unref?.();
+
     return {
         bot,
         stop: () => {
+            if (updateHintRefreshTimer) clearInterval(updateHintRefreshTimer);
+            updateHintRefreshTimer = null;
             for (const refresh of pairingRefreshTimers.values()) {
                 refresh.active = false;
                 clearTimeout(refresh.timer);

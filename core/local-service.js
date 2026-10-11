@@ -472,6 +472,14 @@ const createLocalService = ({
         return updateManager.checkForUpdates();
     };
 
+    const refreshUpdateHint = () => {
+        if (operationIsRunning() || state.isEngineRunning) {
+            return Promise.resolve(updateManager.getCachedUpdateHint());
+        }
+        return updateManager.refreshUpdateHint();
+    };
+    const getUpdateAvailability = () => updateManager.getCachedUpdateHint()?.updateAvailable === true;
+
     const applyUpdate = async ({ confirm } = {}) => {
         if (confirm !== true) throw createError('Explicit confirmation is required to update cekbio.');
         ensureUpdateIsSafe();
@@ -516,8 +524,10 @@ const createLocalService = ({
         getSenderHealth,
         getSenders: () => ({ senders: listSenders() }),
         getStatus,
+        getUpdateAvailability,
         getTargetNames,
         getTargets,
+        refreshUpdateHint,
         requestShutdown,
         restartApplication,
         startScan,

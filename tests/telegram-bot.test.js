@@ -570,6 +570,7 @@ test('start menu shows Targets heading, upload action, and one full-width button
         targets,
         activeTarget: targets[1],
         page: 0,
+        updateAvailable: true,
         callbackData: payload => JSON.stringify(payload)
     });
     const rows = keyboard.inline_keyboard;
@@ -589,7 +590,7 @@ test('start menu shows Targets heading, upload action, and one full-width button
         probeHealth: true
     });
     assert.ok(labels.includes('⬆️ Upload Targets'));
-    assert.ok(labels.includes('⬆️ Check for updates'));
+    assert.ok(labels.includes('⬆️ Update available'));
     assert.ok(labels.includes('business_one'));
     assert.ok(labels.includes('personal_two'));
     assert.equal(labels.at(-1), '⏻ Shutdown');
@@ -605,7 +606,7 @@ test('start menu shows Targets heading, upload action, and one full-width button
     assert.ok(rows.some(row => row.some(button =>
         button.callback_data && JSON.parse(button.callback_data).type === 'select-target'
     )));
-    const updateButton = rows.flat().find(button => button.text === '⬆️ Check for updates');
+    const updateButton = rows.flat().find(button => button.text === '⬆️ Update available');
     assert.deepEqual(JSON.parse(updateButton.callback_data), { type: 'check-for-updates' });
 
     const runningKeyboard = buildMainMenuKeyboard({
@@ -625,11 +626,26 @@ test('start menu shows Targets heading, upload action, and one full-width button
         targets: pagedTargets,
         activeTarget: null,
         page: 0,
+        updateAvailable: true,
         callbackData: payload => JSON.stringify(payload)
     });
     assert.deepEqual(pagedKeyboard.inline_keyboard.at(-3).map(button => button.text), ['Next ➡️']);
-    assert.equal(pagedKeyboard.inline_keyboard.at(-2)[0].text, '⬆️ Check for updates');
+    assert.equal(pagedKeyboard.inline_keyboard.at(-2)[0].text, '⬆️ Update available');
     assert.equal(pagedKeyboard.inline_keyboard.at(-1)[0].text, '⏻ Shutdown');
+});
+
+test('main menu omits the update action unless an update is available', () => {
+    const keyboard = buildMainMenuKeyboard({
+        targets: [],
+        activeTarget: null,
+        page: 0,
+        callbackData: payload => JSON.stringify(payload)
+    });
+
+    assert.equal(
+        keyboard.inline_keyboard.flat().some(button => button.text === '⬆️ Update available'),
+        false
+    );
 });
 
 test('pairing code is available only while the pairing operation is running', () => {
