@@ -8,6 +8,7 @@ const {
     buildScanProgressKeyboard,
     buildStatusKeyboard,
     buildResultsKeyboard,
+    buildConfirmationKeyboard,
     buildSenderSessionsKeyboard,
     createActionRegistry,
     createActiveTargetSelection,
@@ -17,6 +18,7 @@ const {
     editShutdownNotice,
     formatSenderButtonLabel,
     formatScanProgress,
+    formatResultButtonLabel,
     formatSenderSessionsText,
     formatTargetButtonLabel,
     formatMainMenuText,
@@ -179,7 +181,7 @@ test('result filename buttons send files directly while Remove remains separatel
     const buttons = keyboard.inline_keyboard.flat();
 
     assert.deepEqual(buttons.map(button => button.text), [
-        'result_personal_targets.txt',
+        'targets.txt',
         'Remove',
         '⬅️ Previous',
         'Next ➡️',
@@ -192,12 +194,34 @@ test('result filename buttons send files directly while Remove remains separatel
     });
     assert.equal(buttons[0].style, 'primary');
     assert.deepEqual(JSON.parse(buttons[1].callback_data), {
+        type: 'request-result-removal-confirmation',
+        action: { type: 'delete-result', filename: 'result_personal_targets.txt' },
+        returnTo: {
+            type: 'show-results',
+            page: 1,
+            message: 'Removal cancelled.'
+        }
+    });
+    assert.equal(buttons[1].style, 'danger');
+    assert.ok(!buttons.some(button => ['Send file', 'Send result file'].includes(button.text)));
+    assert.equal(formatResultButtonLabel('result_business_targets.txt'), 'targets.txt');
+    assert.equal(formatResultButtonLabel('result_unregistered_my targets.txt'), 'my targets.txt');
+
+    const confirmation = buildConfirmationKeyboard(
+        payload => JSON.stringify(payload),
+        { type: 'delete-result', filename: 'result_personal_targets.txt' },
+        { type: 'show-results', page: 1 }
+    ).inline_keyboard.flat();
+    assert.deepEqual(confirmation.map(button => button.text), ['✅ Confirm', 'Cancel']);
+    assert.deepEqual(JSON.parse(confirmation[0].callback_data), {
         type: 'confirm',
         action: { type: 'delete-result', filename: 'result_personal_targets.txt' },
         returnTo: { type: 'show-results', page: 1 }
     });
-    assert.equal(buttons[1].style, 'danger');
-    assert.ok(!buttons.some(button => ['Send file', 'Send result file'].includes(button.text)));
+    assert.deepEqual(JSON.parse(confirmation[1].callback_data), {
+        type: 'cancel',
+        returnTo: { type: 'show-results', page: 1 }
+    });
 });
 
 test('status and progress keyboards omit manual Refresh buttons', () => {
@@ -215,6 +239,37 @@ test('status and progress keyboards omit manual Refresh buttons', () => {
     assert.ok([...statusLabels, ...progressLabels].every(label => !/refresh/i.test(label)));
     assert.deepEqual(JSON.parse(statusKeyboard.inline_keyboard[1][0].callback_data), { type: 'main-menu' });
     assert.deepEqual(JSON.parse(progressKeyboard.inline_keyboard[0][0].callback_data), { type: 'main-menu' });
+});
+
+test('completed scan progress exposes paginated direct result download buttons', () => {
+    const callbackData = payload => JSON.stringify(payload);
+    const results = Array.from({ length: 7 }, (_, index) =>
+        `result_business_target_${index + 1}.txt`
+    );
+    const firstPage = buildScanProgressKeyboard(callbackData, results);
+    const secondPage = buildScanProgressKeyboard(callbackData, results, 1);
+    const firstButtons = firstPage.inline_keyboard.flat();
+    const secondButtons = secondPage.inline_keyboard.flat();
+
+    assert.deepEqual(firstButtons.map(button => button.text), [
+        'target_1.txt', 'target_2.txt', 'target_3.txt',
+        'target_4.txt', 'target_5.txt', 'target_6.txt',
+        'Next ➡️', '🏠 Main menu'
+    ]);
+    assert.deepEqual(JSON.parse(firstButtons[0].callback_data), {
+        type: 'send-result',
+        filename: 'result_business_target_1.txt',
+        page: 0
+    });
+    assert.deepEqual(secondButtons.map(button => button.text), [
+        'target_7.txt',
+        '⬅️ Previous',
+        '🏠 Main menu'
+    ]);
+    assert.deepEqual(JSON.parse(secondButtons[1].callback_data), {
+        type: 'scan-result-page',
+        page: 0
+    });
 });
 
 test('dashboard creates one control message and edits it for later updates', async () => {

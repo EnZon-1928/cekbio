@@ -228,8 +228,44 @@ const buildStatusKeyboard = ({ pairingCode, callbackData }) => {
     return keyboard;
 };
 
-const buildScanProgressKeyboard = callbackData => {
+const formatResultButtonLabel = filename => {
+    const match = typeof filename === 'string' ? filename.match(RESULT_PATTERN) : null;
+    return match ? `${match[2]}.txt` : String(filename);
+};
+
+const buildConfirmationKeyboard = (callbackData, action, returnTo) => {
     const keyboard = new InlineKeyboard();
+    keyboard.text(
+        { text: '✅ Confirm', style: getActionButtonStyle('✅ Confirm', { type: 'confirm' }) },
+        callbackData({ type: 'confirm', action, returnTo })
+    );
+    keyboard.text(
+        { text: 'Cancel', style: getActionButtonStyle('Cancel', { type: 'cancel' }) },
+        callbackData({ type: 'cancel', returnTo })
+    );
+    return keyboard;
+};
+
+const buildScanProgressKeyboard = (callbackData, results = [], requestedPage = 0) => {
+    const keyboard = new InlineKeyboard();
+    const { page, pageCount, items } = paginateItems(results, requestedPage);
+    for (const filename of items) {
+        keyboard.text(
+            { text: [...formatResultButtonLabel(filename)].slice(0, 60).join(''), style: BUTTON_STYLE.primary },
+            callbackData({ type: 'send-result', filename, page })
+        ).row();
+    }
+    if (pageCount > 1) {
+        if (page > 0) keyboard.text(
+            { text: '⬅️ Previous', style: BUTTON_STYLE.primary },
+            callbackData({ type: 'scan-result-page', page: page - 1 })
+        );
+        if (page + 1 < pageCount) keyboard.text(
+            { text: 'Next ➡️', style: BUTTON_STYLE.primary },
+            callbackData({ type: 'scan-result-page', page: page + 1 })
+        );
+        keyboard.row();
+    }
     keyboard.text(
         { text: '🏠 Main menu', style: BUTTON_STYLE.primary },
         callbackData({ type: 'main-menu' })
@@ -323,11 +359,11 @@ const buildResultsKeyboard = ({ results, page, pageCount, callbackData }) => {
         );
 
     for (const filename of results) {
-        addButton(filename, { type: 'send-result', filename, page });
+        addButton(formatResultButtonLabel(filename), { type: 'send-result', filename, page });
         addButton('Remove', {
-            type: 'confirm',
+            type: 'request-result-removal-confirmation',
             action: { type: 'delete-result', filename },
-            returnTo: { type: 'show-results', page }
+            returnTo: { type: 'show-results', page, message: 'Removal cancelled.' }
         }, BUTTON_STYLE.danger).row();
     }
     if (pageCount > 1) {
@@ -581,11 +617,14 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 }
                 const text = formatScanProgress(scan);
                 if (text !== refresh.lastText) {
+                    const results = scan.status === 'completed'
+                        ? service.getResults().results.filter(isResultFilename)
+                        : [];
                     const message = await dashboard.present(
                         chatId,
                         messageId,
                         text,
-                        buildScanProgressKeyboard(registerAction)
+                        buildScanProgressKeyboard(registerAction, results)
                     );
                     refresh.lastText = text;
                     messageId = message.message_id;
@@ -609,10 +648,17 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         scanProgressRefreshes.set(key, refresh);
     };
 
-    const showScanProgress = async (ctx, scan) => {
+    const showScanProgress = async (ctx, scan, resultPage = 0) => {
         clearScanProgressRefresh(ctx.chat.id);
         const text = formatScanProgress(scan);
-        const result = await present(ctx, text, buildScanProgressKeyboard(registerAction));
+        const results = scan?.status === 'completed'
+            ? service.getResults().results.filter(isResultFilename)
+            : [];
+        const result = await present(
+            ctx,
+            text,
+            buildScanProgressKeyboard(registerAction, results, resultPage)
+        );
         const messageId = dashboard.getMessageId(ctx.chat.id) || result?.message_id;
         if (messageId && ['starting', 'running'].includes(scan?.status)) {
             scheduleScanProgressRefresh(
@@ -625,14 +671,14 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         return result;
     };
 
-    const refreshScanProgress = async ctx => {
+    const refreshScanProgress = async (ctx, resultPage = 0) => {
         const { scan } = service.getStatus();
         if (!scan) {
             clearScanProgressRefresh(ctx.chat.id);
             await showMainMenu(ctx, 'No scan is currently available.');
             return;
         }
-        await showScanProgress(ctx, scan);
+        await showScanProgress(ctx, scan, resultPage);
     };
 
     const schedulePairingRefresh = (chatId, messageId, expiresAt, preserveErrors = false) => {
@@ -972,9 +1018,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     };
 
     const askConfirmation = async (ctx, message, action, returnTo) => {
-        const keyboard = new InlineKeyboard();
-        actionButton(keyboard, '✅ Confirm', { type: 'confirm', action, returnTo });
-        actionButton(keyboard, 'Cancel', { type: 'cancel', returnTo });
+        const keyboard = buildConfirmationKeyboard(registerAction, action, returnTo);
         return present(ctx, message, keyboard);
     };
 
@@ -1010,11 +1054,25 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 await sendResults(ctx, action.filename);
                 await showCollection(ctx, 'results', action.page, `${action.filename} was sent.`);
                 return;
+            case 'scan-result-page':
+                await refreshScanProgress(ctx, action.page);
+                return;
             case 'show-status':
                 await showStatus(ctx);
                 return;
             case 'scan-progress-refresh':
                 await refreshScanProgress(ctx);
+                return;
+            case 'request-result-removal-confirmation':
+                if (action.action?.type !== 'delete-result') {
+                    throw new Error('This confirmation request is not available.');
+                }
+                await askConfirmation(
+                    ctx,
+                    `Remove ${formatResultButtonLabel(action.action.filename)}? The related checkpoint will also be removed, if present.`,
+                    action.action,
+                    action.returnTo
+                );
                 return;
             case 'main-menu':
                 pendingBatchSizes.delete(String(ctx.from.id));
@@ -1339,6 +1397,7 @@ module.exports = {
     buildScanProgressKeyboard,
     buildMainMenuKeyboard,
     buildResultsKeyboard,
+    buildConfirmationKeyboard,
     buildSenderSessionsKeyboard,
     createActionRegistry,
     createActiveTargetSelection,
@@ -1349,6 +1408,7 @@ module.exports = {
     getTargetButtonStyle,
     formatSenderSessionsText,
     formatScanProgress,
+    formatResultButtonLabel,
     formatTargetButtonLabel,
     formatMainMenuText,
     getTargetDisplayName,

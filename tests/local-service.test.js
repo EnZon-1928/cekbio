@@ -18,7 +18,7 @@ test('target name lookup avoids checkpoint data while full lookup retains it for
     await withTemporaryRoot(t, root => {
         fs.writeFileSync(path.join(root, 'target_list.txt'), '628123456789\n');
         fs.writeFileSync(path.join(root, 'result_business_list.txt'), 'result');
-        fs.writeFileSync(path.join(root, 'checkpoint_list.json'), '{"batchIndex":2}');
+        fs.writeFileSync(path.join(root, 'checkpoint_target_list.json'), '{"batchIndex":2}');
         const service = createLocalService({ root });
 
         assert.deepEqual(service.getTargetNames(), ['target_list.txt']);
