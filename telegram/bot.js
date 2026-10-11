@@ -68,7 +68,7 @@ const isDashboardUneditableError = error =>
     /message to edit not found|message can't be edited|message identifier is not specified/i
         .test(error?.description || error?.message || '');
 
-const createDashboardPresenter = ({ sendMessage, editMessageText }) => {
+const createDashboardPresenter = ({ sendMessage, editMessageText, editMessageReplyMarkup }) => {
     const messageIds = new Map();
     return {
         async present(chatId, preferredMessageId, text, replyMarkup) {
@@ -92,6 +92,13 @@ const createDashboardPresenter = ({ sendMessage, editMessageText }) => {
             if (!message?.message_id) throw new Error('Telegram did not return a dashboard message ID.');
             messageIds.set(chatId, message.message_id);
             return message;
+        },
+        async updateReplyMarkup(chatId, preferredMessageId, replyMarkup) {
+            const messageId = messageIds.get(chatId) || preferredMessageId;
+            if (!messageId) throw new Error('Telegram dashboard message ID is not available.');
+            await editMessageReplyMarkup(chatId, messageId, { reply_markup: replyMarkup });
+            messageIds.set(chatId, messageId);
+            return { message_id: messageId };
         },
         getMessageId(chatId) {
             return messageIds.get(chatId) || null;
@@ -332,10 +339,7 @@ const buildResultsKeyboard = ({ results, page, pageCount, callbackData }) => {
     return keyboard;
 };
 
-const formatMainMenuText = (message, activeTarget, page, pageCount, targetCount) => {
-    const targetStatus = activeTarget
-        ? `Active target: ${getTargetDisplayName(activeTarget)}`
-        : 'No active target selected.';
+const formatMainMenuText = (message, page, pageCount, targetCount) => {
     const targetGuidance = targetCount
         ? 'Select one target below, or upload a new list.'
         : 'Upload a .txt or .xlsx document to add a target list.';
@@ -345,7 +349,6 @@ const formatMainMenuText = (message, activeTarget, page, pageCount, targetCount)
         message,
         '',
         'Targets',
-        targetStatus,
         targetGuidance,
         ...(pageCount > 1 ? [`Page ${page + 1} of ${pageCount}`] : [])
     ].join('\n');
@@ -420,7 +423,9 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     const dashboard = createDashboardPresenter({
         sendMessage: (chatId, text, options) => bot.api.sendMessage(chatId, text, options),
         editMessageText: (chatId, messageId, text, options) =>
-            bot.api.editMessageText(chatId, messageId, text, options)
+            bot.api.editMessageText(chatId, messageId, text, options),
+        editMessageReplyMarkup: (chatId, messageId, options) =>
+            bot.api.editMessageReplyMarkup(chatId, messageId, options)
     });
     const actions = createActionRegistry();
     const activeTargetSelection = createActiveTargetSelection();
@@ -522,7 +527,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         const { scan } = service.getStatus();
         const activeTarget = activeTargetSelection.reconcile(targets);
         const { page: currentPage, pageCount } = paginateItems(targets, page);
-        const text = formatMainMenuText(message, activeTarget, currentPage, pageCount, targets.length);
+        const text = formatMainMenuText(message, currentPage, pageCount, targets.length);
         return present(ctx, text, mainMenuKeyboard(targets, activeTarget, currentPage, scan?.status));
     };
 
@@ -1060,12 +1065,14 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
             }
             case 'select-target': {
                 const targets = service.getTargetNames();
-                activeTargetSelection.select(action.filename, targets);
+                const activeTarget = activeTargetSelection.select(action.filename, targets);
                 if (action.returnToMain) {
-                    await showMainMenu(
-                        ctx,
-                        `Active target set to ${getTargetDisplayName(action.filename)}.`,
-                        action.page
+                    const { scan } = service.getStatus();
+                    const { page } = paginateItems(targets, action.page);
+                    await dashboard.updateReplyMarkup(
+                        ctx.chat.id,
+                        ctx.callbackQuery?.message?.message_id,
+                        mainMenuKeyboard(targets, activeTarget, page, scan?.status)
                     );
                 } else {
                     await showCollection(

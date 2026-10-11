@@ -250,6 +250,33 @@ test('dashboard uses callback message when no in-memory dashboard exists', async
     assert.equal(edited[0][1], 77);
 });
 
+test('dashboard target selection can update only the keyboard markup', async () => {
+    const sent = [];
+    const editedTexts = [];
+    const editedMarkups = [];
+    const dashboard = createDashboardPresenter({
+        sendMessage: async (...args) => {
+            sent.push(args);
+            return { message_id: 41 };
+        },
+        editMessageText: async (...args) => editedTexts.push(args),
+        editMessageReplyMarkup: async (...args) => editedMarkups.push(args)
+    });
+    const oldKeyboard = new InlineKeyboard().text('Target A', 'target-a');
+    const selectedKeyboard = new InlineKeyboard().text(
+        { text: 'Target A', style: 'success' },
+        'target-a'
+    );
+
+    await dashboard.present(123, null, 'Choose a target', oldKeyboard);
+    await dashboard.updateReplyMarkup(123, null, selectedKeyboard);
+
+    assert.equal(sent.length, 1);
+    assert.deepEqual(editedTexts, []);
+    assert.deepEqual(editedMarkups, [[123, 41, { reply_markup: selectedKeyboard }]]);
+    assert.equal(dashboard.getMessageId(123), 41);
+});
+
 test('dashboard treats an unchanged Telegram message as updated without sending a duplicate', async () => {
     let sendCount = 0;
     const dashboard = createDashboardPresenter({
@@ -490,9 +517,10 @@ test('start menu shows Targets heading, upload action, and one full-width button
     });
     const rows = keyboard.inline_keyboard;
     const labels = rows.flat().map(button => button.text);
-    const text = formatMainMenuText('Choose an action below.', targets[1], 0, 1, targets.length);
+    const text = formatMainMenuText('Choose an action below.', 0, 1, targets.length);
 
     assert.match(text, /\nTargets\n/);
+    assert.doesNotMatch(text, /Active target|No active target selected/);
     assert.deepEqual(rows.slice(0, 3).map(row => row.map(button => button.text)), [
         ['👤 Senders', '🔎 Scan'],
         ['📦 Results'],
