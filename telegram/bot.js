@@ -251,7 +251,7 @@ const buildMainMenuKeyboard = ({ targets, activeTarget, page, callbackData, scan
             callbackData(payload)
         );
 
-    addButton('👤 Senders', { type: 'show-senders', page: 0 });
+    addButton('👤 Senders', { type: 'show-senders', page: 0, probeHealth: true });
     const scanInProgress = ['starting', 'running'].includes(scanStatus);
     addButton(
         scanInProgress ? '🔎 Scan progress' : '🔎 Scan',
@@ -360,6 +360,9 @@ const acknowledgeCallbackQuery = async ctx => {
     if (ctx.callbackQuery) await ctx.answerCallbackQuery();
 };
 
+const shouldProbeSenderHealth = ({ command, action } = {}) =>
+    command === 'start' || (action?.type === 'show-senders' && action.probeHealth === true);
+
 const paginateItems = (items, requestedPage, pageSize = LIST_PAGE_SIZE) => {
     if (!Number.isSafeInteger(pageSize) || pageSize < 1) throw new Error('Page size must be a positive integer.');
     const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
@@ -420,18 +423,15 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     const scanProgressErrors = new Set();
 
     const scheduleSenderHealthCheck = chatId => {
-        setImmediate(() => {
-            Promise.resolve()
-                .then(() => service.getSenderHealth())
-                .then(() => senderHealthErrors.delete(String(chatId)))
-                .catch(error => {
-                    const key = String(chatId);
-                    if (!senderHealthErrors.has(key)) {
-                        senderHealthErrors.add(key);
-                        console.error('Automatic sender health check failed:', error.message);
-                    }
-                });
-        });
+        const key = String(chatId);
+        service.getSenderHealth()
+            .then(() => senderHealthErrors.delete(key))
+            .catch(error => {
+                if (!senderHealthErrors.has(key)) {
+                    senderHealthErrors.add(key);
+                    console.error('Automatic sender health check failed:', error.message);
+                }
+            });
     };
 
     const registerAction = (payload) => {
@@ -1005,6 +1005,9 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 await showMainMenu(ctx);
                 return;
             case 'show-senders':
+                if (shouldProbeSenderHealth({ action })) {
+                    scheduleSenderHealthCheck(ctx.chat.id);
+                }
                 await showCollection(ctx, 'senders', action.page);
                 return;
             case 'refresh-senders':
@@ -1155,7 +1158,6 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
             }
             clearScanProgressRefresh(ctx.chat?.id);
         }
-        scheduleSenderHealthCheck(ctx.chat?.id);
         await next();
     });
 
@@ -1176,6 +1178,9 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     bot.command('start', async ctx => {
         pendingBatchSizes.delete(String(ctx.from.id));
         pendingSenderNumbers.delete(String(ctx.from.id));
+        if (shouldProbeSenderHealth({ command: 'start' })) {
+            scheduleSenderHealthCheck(ctx.chat?.id);
+        }
         await showMainMenu(ctx, 'Choose an action below.');
     });
 
@@ -1335,6 +1340,7 @@ module.exports = {
     getVisiblePairingCode,
     isAuthorizedUpdate,
     acknowledgeCallbackQuery,
+    shouldProbeSenderHealth,
     isPairingInProgress,
     shouldContinuePairingRefresh,
     isResultFilename,

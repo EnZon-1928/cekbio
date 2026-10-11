@@ -29,6 +29,7 @@ const {
     isResultFilename,
     paginateItems,
     shouldContinuePairingRefresh,
+    shouldProbeSenderHealth,
     validateTelegramConfig,
     TELEGRAM_COMMANDS
 } = require('../telegram/bot');
@@ -70,6 +71,19 @@ test('callback acknowledgement runs immediately when a callback update is receiv
     });
 
     assert.deepEqual(events, ['acknowledged']);
+});
+
+test('sender health checks are triggered only on /start and opening Sender Sessions', () => {
+    assert.equal(shouldProbeSenderHealth({ command: 'start' }), true);
+    assert.equal(shouldProbeSenderHealth({
+        action: { type: 'show-senders', page: 0, probeHealth: true }
+    }), true);
+    assert.equal(shouldProbeSenderHealth({ action: { type: 'show-senders', page: 1 } }), false);
+    assert.equal(shouldProbeSenderHealth({ action: { type: 'refresh-senders', page: 0 } }), false);
+    assert.equal(shouldProbeSenderHealth({ action: { type: 'select-target' } }), false);
+    assert.equal(shouldProbeSenderHealth({ action: { type: 'main-menu' } }), false);
+    assert.equal(shouldProbeSenderHealth({ action: { type: 'show-results' } }), false);
+    assert.equal(shouldProbeSenderHealth({}), false);
 });
 
 test('only flat generated result text files may be sent to Telegram', () => {
@@ -453,6 +467,11 @@ test('start menu shows Targets heading, upload action, and one full-width button
         ['📦 Results'],
         ['⬆️ Upload Targets']
     ]);
+    assert.deepEqual(JSON.parse(rows[0][0].callback_data), {
+        type: 'show-senders',
+        page: 0,
+        probeHealth: true
+    });
     assert.ok(labels.includes('⬆️ Upload Targets'));
     assert.ok(labels.includes('business_one'));
     assert.ok(labels.includes('personal_two'));
