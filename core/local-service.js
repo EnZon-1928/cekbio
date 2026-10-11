@@ -5,6 +5,7 @@ const XLSX = require('xlsx');
 const { state } = require('./state');
 const { startEngine } = require('./engine');
 const { addSender, pingSender } = require('./sender');
+const { createUpdateManager } = require('./update-manager');
 const { subscribeLogs } = require('../utils/logger');
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -100,16 +101,21 @@ const createLocalService = ({
     runEngine = startEngine,
     createSender = addSender,
     checkSender = pingSender,
-    onShutdown = () => {}
+    onShutdown = () => {},
+    onRestart = () => {},
+    updateManager = createUpdateManager({ root })
 } = {}) => {
     let scanJob = null;
     let senderJob = null;
+    let updateJob = null;
     let senderHealthPromise = null;
     let scanLogSubscription = null;
     const senderHealth = new Map();
 
+    const updateIsRunning = () => ['running', 'restart-pending'].includes(updateJob?.status);
     const operationIsRunning = () => scanJob?.status === 'starting' || scanJob?.status === 'running'
-        || senderJob?.status === 'starting' || senderJob?.status === 'running';
+        || senderJob?.status === 'starting' || senderJob?.status === 'running'
+        || updateIsRunning();
     const scanIsRunning = () => scanJob?.status === 'starting' || scanJob?.status === 'running'
         || state.isEngineRunning;
     const listSenders = () => listSendersIn(root);
@@ -238,6 +244,9 @@ const createLocalService = ({
     };
 
     const uploadTargetText = ({ name, contents }) => {
+        if (updateIsRunning()) {
+            throw createError('Target files cannot be changed while an update is running.', 409);
+        }
         if (typeof name !== 'string' || typeof contents !== 'string'
             || Buffer.byteLength(contents, 'utf8') > MAX_UPLOAD_BYTES) {
             throw createError('Choose a .txt file no larger than 10 MB.');
@@ -256,6 +265,9 @@ const createLocalService = ({
     };
 
     const uploadTargetWorkbook = ({ name, contents }) => {
+        if (updateIsRunning()) {
+            throw createError('Target files cannot be changed while an update is running.', 409);
+        }
         if (typeof name !== 'string' || !/\.xlsx$/i.test(name)
             || !Buffer.isBuffer(contents) || contents.length === 0) {
             throw createError('Choose a valid .xlsx workbook no larger than 10 MB.');
@@ -292,8 +304,9 @@ const createLocalService = ({
     };
 
     const deleteTarget = (filename, { confirm } = {}) => {
-        if (scanIsRunning()) {
-            throw createError('Target lists cannot be removed while a scan is in progress.', 409);
+        if (scanIsRunning()) throw createError('Target lists cannot be removed while a scan is in progress.', 409);
+        if (updateIsRunning()) {
+            throw createError('Target lists cannot be removed while an update is in progress.', 409);
         }
         if (confirm !== true) throw createError('Explicit confirmation is required to remove a target list.');
         if (!listTargets().includes(filename)) throw createError('Target list not found.', 404);
@@ -305,8 +318,9 @@ const createLocalService = ({
     };
 
     const deleteResult = (filename, { confirm } = {}) => {
-        if (scanIsRunning()) {
-            throw createError('Results cannot be removed while a scan is in progress.', 409);
+        if (scanIsRunning()) throw createError('Results cannot be removed while a scan is in progress.', 409);
+        if (updateIsRunning()) {
+            throw createError('Results cannot be removed while an update is in progress.', 409);
         }
         if (confirm !== true) throw createError('Explicit confirmation is required to remove a result.');
         if (!isValidResultFilename(filename) || !listResults().includes(filename)) {
@@ -323,6 +337,9 @@ const createLocalService = ({
     const deleteSender = async (folder, { confirm } = {}) => {
         if (confirm !== true) throw createError('Explicit confirmation is required to delete a sender session.');
         if (!listSenders().includes(folder)) throw createError('Sender session not found.', 404);
+        if (updateIsRunning()) {
+            throw createError('Cannot delete a sender while an update is in progress.', 409);
+        }
         if (operationIsRunning() || state.isEngineRunning) {
             throw createError('Cannot delete a sender while another operation is running.', 409);
         }
@@ -441,7 +458,48 @@ const createLocalService = ({
         return { message: 'Application is shutting down.' };
     };
 
+    const ensureUpdateIsSafe = () => {
+        if (operationIsRunning() || state.isEngineRunning || senderHealthPromise) {
+            throw createError('Updates are unavailable while a scan or sender operation is active.', 409);
+        }
+    };
+
+    const checkForUpdates = async () => {
+        ensureUpdateIsSafe();
+        return updateManager.checkForUpdates();
+    };
+
+    const applyUpdate = async ({ confirm } = {}) => {
+        if (confirm !== true) throw createError('Explicit confirmation is required to update cekbio.');
+        ensureUpdateIsSafe();
+        updateJob = { status: 'running', mode: 'update', error: null };
+        try {
+            const result = await updateManager.applyUpdate();
+            updateJob.status = result.updated ? 'restart-pending' : 'completed';
+            return result;
+        } catch (error) {
+            updateJob.status = 'failed';
+            updateJob.error = error.message;
+            throw error;
+        }
+    };
+
+    const restartApplication = async () => {
+        try {
+            await onRestart();
+            if (updateJob?.status === 'restart-pending') updateJob.status = 'completed';
+        } catch (error) {
+            if (updateJob?.status === 'restart-pending') {
+                updateJob.status = 'failed';
+                updateJob.error = error.message;
+            }
+            throw error;
+        }
+    };
+
     return {
+        applyUpdate,
+        checkForUpdates,
         deleteResult,
         deleteSender,
         deleteTarget,
@@ -458,6 +516,7 @@ const createLocalService = ({
         getTargetNames,
         getTargets,
         requestShutdown,
+        restartApplication,
         startScan,
         startSender,
         uploadTargetText,

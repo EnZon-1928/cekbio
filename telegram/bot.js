@@ -320,6 +320,7 @@ const buildMainMenuKeyboard = ({ targets, activeTarget, page, callbackData, scan
         }
         keyboard.row();
     }
+    addButton('⬆️ Check for updates', { type: 'check-for-updates' }).row();
     addButton('⏻ Shutdown', { type: 'shutdown' });
     return keyboard;
 };
@@ -1060,6 +1061,33 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
             case 'show-status':
                 await showStatus(ctx);
                 return;
+            case 'check-for-updates': {
+                await present(ctx, 'Checking the official cekbio update…', new InlineKeyboard());
+                const update = await service.checkForUpdates();
+                if (!update.updateAvailable) {
+                    await showMainMenu(ctx, 'cekbio is up to date.');
+                    return;
+                }
+                await askConfirmation(
+                    ctx,
+                    `${update.commitsBehind} update${update.commitsBehind === 1 ? '' : 's'} available on ${update.branch}. Apply the update and restart cekbio?`,
+                    { type: 'apply-update' },
+                    { type: 'main-menu' }
+                );
+                return;
+            }
+            case 'apply-update': {
+                await present(ctx, 'Applying the official update. Please keep cekbio running…', new InlineKeyboard());
+                const update = await service.applyUpdate({ confirm: true });
+                if (!update.updated) {
+                    await showMainMenu(ctx, 'cekbio is already up to date.');
+                    return;
+                }
+                await present(ctx, 'Update installed. Restarting cekbio now.', new InlineKeyboard());
+                await new Promise(resolve => setTimeout(resolve, 750));
+                await service.restartApplication();
+                return;
+            }
             case 'scan-progress-refresh':
                 await refreshScanProgress(ctx);
                 return;
@@ -1182,6 +1210,10 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
             case 'confirm':
                 if (action.action.type === 'shutdown') {
                     await shutdownLocalApplication(ctx);
+                    return;
+                }
+                if (action.action.type === 'apply-update') {
+                    await performAction(ctx, { type: 'apply-update' });
                     return;
                 }
                 {

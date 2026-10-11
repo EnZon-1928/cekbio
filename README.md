@@ -68,12 +68,15 @@ The Telegram bot provides a button-based workflow:
 2. **Targets** — select one target list from the main menu or upload a `.txt` or `.xlsx` file.
 3. **Scan** — choose a batch size and checkpoint option, then monitor progress in Telegram.
 4. **Results** — download result files or remove them with confirmation.
+5. **Updates** — check the official `telegram_bot` branch, review whether an update is available, then confirm to install it and restart cekbio.
 
 The Scan button uses the currently selected target and all sender sessions that connect successfully. When a scan completes, available result files appear as direct download buttons on the progress dashboard. Longer lists are paginated. Button labels show the category and target name with spaces, without the `.txt` extension; the underlying file names remain unchanged.
 
 The bot keeps one control dashboard message per chat while running. Menu actions, progress, pairing status, upload feedback, and errors update that message. A requested result file is sent as a separate document. Scan and pairing status update automatically; there are no manual Refresh buttons.
 
 Use `/start` to open the menu. The bot publishes `/start` and `/shutdown` as its slash commands; other operations are available from buttons. Sender health is checked on `/start` and when opening **Sender Sessions**. Removing a result requires confirmation and also removes its related checkpoint, if present. Shutting down requires confirmation, stops only the local cekbio process, and is refused while a scan or sender operation is active.
+
+To update, choose **Check for updates** from the main menu. cekbio checks the official `EnZon-1928/cekbio` repository's `telegram_bot` branch, regardless of your GitHub account. An available update is applied only after you confirm; cekbio then restarts automatically. Updates are refused if you are on another branch, have tracked local changes, or a scan/sender operation is active. Keep target lists and other local data in place; the updater does not clean untracked files. If Git cannot safely fast-forward because a local file would be overwritten, the update stops and leaves that file untouched. If dependency installation fails after the code update, resolve the displayed dependency error, install dependencies with `npm install` from the project directory, and start cekbio again with `npm run local`.
 
 Button colors indicate state: green means selected or active, red means inactive or destructive, and blue is used for standard actions and checks in progress. Exact shades depend on the Telegram app theme.
 

@@ -1,5 +1,5 @@
 // file: index.js
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const { runMainMenu } = require('./io/menu');
 const { state, saveReport } = require('./core/state');
 
@@ -49,13 +49,30 @@ const stopLocalApplication = async telegramBot => {
     process.exit(0);
 };
 
+const restartLocalApplication = async telegramBot => {
+    await telegramBot?.stop();
+    const child = spawn(process.execPath, process.argv.slice(1), {
+        cwd: process.cwd(),
+        env: process.env,
+        stdio: 'inherit',
+        windowsHide: false
+    });
+    await new Promise((resolve, reject) => {
+        child.once('spawn', resolve);
+        child.once('error', reject);
+    });
+    child.unref();
+    process.exit(0);
+};
+
 const runTelegramBot = async () => {
     require('dotenv').config();
     const { createLocalService } = require('./core/local-service');
     const { startTelegramBot } = require('./telegram/bot');
     let telegramBot = null;
     const service = createLocalService({
-        onShutdown: () => stopLocalApplication(telegramBot)
+        onShutdown: () => stopLocalApplication(telegramBot),
+        onRestart: () => restartLocalApplication(telegramBot)
     });
 
     try {

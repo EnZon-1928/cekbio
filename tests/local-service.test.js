@@ -213,3 +213,57 @@ test('sender deletion and application shutdown require confirmation', async t =>
         assert.equal(shutdowns, 1);
     });
 });
+
+test('update requires confirmation and prevents new operations until it finishes', async t => {
+    await withTemporaryRoot(t, async root => {
+        fs.writeFileSync(path.join(root, 'targets.txt'), '628123456789\n');
+        fs.mkdirSync(path.join(root, 'session_1'));
+        let finishUpdate;
+        let restarts = 0;
+        const service = createLocalService({
+            root,
+            updateManager: {
+                checkForUpdates: async () => ({ updateAvailable: true, commitsBehind: 1 }),
+                applyUpdate: () => new Promise(resolve => { finishUpdate = resolve; })
+            },
+            onRestart: async () => { restarts++; }
+        });
+
+        await assert.rejects(service.applyUpdate(), /confirmation is required/);
+        const applying = service.applyUpdate({ confirm: true });
+        await new Promise(resolve => setImmediate(resolve));
+
+        assert.throws(
+            () => service.startScan({
+                targetFile: 'targets.txt',
+                sessionFolders: ['session_1'],
+                batchSize: 10,
+                resume: false
+            }),
+            /Another sender or scan operation is already running/
+        );
+        assert.throws(
+            () => service.uploadTargetText({ name: 'new.txt', contents: '628123456789' }),
+            /while an update is running/
+        );
+
+        finishUpdate({ updated: true });
+        assert.deepEqual(await applying, { updated: true });
+        assert.equal(restarts, 0);
+        assert.throws(
+            () => service.startScan({
+                targetFile: 'targets.txt',
+                sessionFolders: ['session_1'],
+                batchSize: 10,
+                resume: false
+            }),
+            /Another sender or scan operation is already running/
+        );
+        assert.throws(
+            () => service.uploadTargetText({ name: 'later.txt', contents: '628123456789' }),
+            /while an update is running/
+        );
+        await service.restartApplication();
+        assert.equal(restarts, 1);
+    });
+});

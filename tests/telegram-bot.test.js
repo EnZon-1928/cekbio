@@ -589,12 +589,13 @@ test('start menu shows Targets heading, upload action, and one full-width button
         probeHealth: true
     });
     assert.ok(labels.includes('⬆️ Upload Targets'));
+    assert.ok(labels.includes('⬆️ Check for updates'));
     assert.ok(labels.includes('business_one'));
     assert.ok(labels.includes('personal_two'));
     assert.equal(labels.at(-1), '⏻ Shutdown');
     assert.deepEqual(JSON.parse(rows.at(-1)[0].callback_data), { type: 'shutdown' });
     assert.deepEqual(rows.flat().map(button => button.style), [
-        'primary', 'primary', 'primary', 'primary', 'danger', 'success', 'primary'
+        'primary', 'primary', 'primary', 'primary', 'danger', 'success', 'primary', 'primary'
     ]);
     assert.deepEqual(rows.find(row => row[0].text === '⬆️ Upload Targets').map(button => button.text), ['⬆️ Upload Targets']);
     assert.deepEqual(rows.find(row => row[0].text === 'personal_two').map(button => button.text), ['personal_two']);
@@ -604,6 +605,8 @@ test('start menu shows Targets heading, upload action, and one full-width button
     assert.ok(rows.some(row => row.some(button =>
         button.callback_data && JSON.parse(button.callback_data).type === 'select-target'
     )));
+    const updateButton = rows.flat().find(button => button.text === '⬆️ Check for updates');
+    assert.deepEqual(JSON.parse(updateButton.callback_data), { type: 'check-for-updates' });
 
     const runningKeyboard = buildMainMenuKeyboard({
         targets,
@@ -624,7 +627,8 @@ test('start menu shows Targets heading, upload action, and one full-width button
         page: 0,
         callbackData: payload => JSON.stringify(payload)
     });
-    assert.deepEqual(pagedKeyboard.inline_keyboard.at(-2).map(button => button.text), ['Next ➡️']);
+    assert.deepEqual(pagedKeyboard.inline_keyboard.at(-3).map(button => button.text), ['Next ➡️']);
+    assert.equal(pagedKeyboard.inline_keyboard.at(-2)[0].text, '⬆️ Check for updates');
     assert.equal(pagedKeyboard.inline_keyboard.at(-1)[0].text, '⏻ Shutdown');
 });
 
