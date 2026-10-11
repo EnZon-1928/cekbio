@@ -1,7 +1,8 @@
 // file: core/scanner.js
 const fs = require('fs');
 const { AsyncLocalStorage } = require('async_hooks');
-const { state: sharedState, saveReport } = require('./state');
+const { state: sharedState, persistScanArtifacts } = require('./state');
+const { ensureRuntimeDirectories } = require('./runtime-storage');
 const { delay, withTimeout } = require('../utils/helpers');
 const { minimalLog } = require('../utils/logger');
 
@@ -59,7 +60,12 @@ const createInputOrderSorter = batches => {
     };
 };
 
-const runScannerPool = async (workers, { onWorkerStatus = () => {}, persist = saveReport } = {}) => {
+const runScannerPool = async (workers, {
+    onWorkerStatus = () => {},
+    persist = persistScanArtifacts,
+    root = process.cwd()
+} = {}) => {
+    const paths = ensureRuntimeDirectories(root);
     const sortResultsByInputOrder = createInputOrderSorter(sharedState.batches);
     const completed = new Set(Array.isArray(sharedState.completedBatchIndices)
         ? sharedState.completedBatchIndices
@@ -120,7 +126,8 @@ const runScannerPool = async (workers, { onWorkerStatus = () => {}, persist = sa
                     finalize: false,
                     closeSocket: false,
                     logCompletion: false,
-                    logErrors: false
+                    logErrors: false,
+                    root
                 }));
                 failureSignal = worker.watchFailure();
                 const result = await Promise.race([
@@ -161,7 +168,7 @@ const runScannerPool = async (workers, { onWorkerStatus = () => {}, persist = sa
 
             if (saveCounter >= 10) {
                 sortResultsByInputOrder();
-                persist();
+                persist(root);
                 saveCounter = 0;
             }
         }
@@ -179,7 +186,7 @@ const runScannerPool = async (workers, { onWorkerStatus = () => {}, persist = sa
         sharedState.batchIndex = 0;
         while (completed.has(sharedState.batchIndex)) sharedState.batchIndex++;
         sortResultsByInputOrder();
-        persist();
+        persist(root);
         minimalLog('error', 'all scan senders are unavailable; remaining batches were saved for resume.');
         return { status: 'paused', completedBatches: completed.size, remainingBatches: pending.length };
     }
@@ -190,10 +197,10 @@ const runScannerPool = async (workers, { onWorkerStatus = () => {}, persist = sa
     sharedState.workerProgress = {};
     sortResultsByInputOrder();
     persist();
-    minimalLog('done', `[report] business: ${sharedState.targetBusiness.length} | personal: ${sharedState.statistics.personal} | unregistered: ${sharedState.statistics.unregistered}++`);
+    minimalLog('done', `[results] business: ${sharedState.targetBusiness.length} | personal: ${sharedState.statistics.personal} | unregistered: ${sharedState.statistics.unregistered}++`);
     minimalLog('system', 'multi-sender scanning process completed.');
     const cleanName = sharedState.activeTargetFile.replace('.txt', '');
-    const checkpointFile = `checkpoint_${cleanName}.json`;
+    const checkpointFile = paths.checkpoint(`checkpoint_${cleanName}.json`);
     if (cleanName && fs.existsSync(checkpointFile)) fs.unlinkSync(checkpointFile);
     return { status: 'completed', completedBatches: completed.size };
 };
@@ -237,8 +244,10 @@ const runScanner = async (sock, {
     finalize = true,
     closeSocket = true,
     logCompletion = true,
-    logErrors = true
+    logErrors = true,
+    root = process.cwd()
 } = {}) => {
+    const paths = ensureRuntimeDirectories(root);
     const state = scanStateStorage.getStore() || sharedState;
     try {
         for (; state.batchIndex < state.batches.length; state.batchIndex++) {
@@ -504,7 +513,7 @@ const runScanner = async (sock, {
 
             if (persist && (isMultipleOf10 || isFinished)) {
                 minimalLog('system', `[auto-save] sorting and writing data (batch ${state.batchIndex + 1})...`);
-                saveReport();
+                persistScanArtifacts(root);
             }
 
             if (state.batchIndex < state.batches.length - 1) {
@@ -515,14 +524,15 @@ const runScanner = async (sock, {
         }
 
         if (logCompletion) {
-            minimalLog('done', `[report] business: ${state.targetBusiness.length} | personal: ${state.statistics.personal} | unregistered: ${state.statistics.unregistered}++`);
+            minimalLog('done', `[results] business: ${state.targetBusiness.length} | personal: ${state.statistics.personal} | unregistered: ${state.statistics.unregistered}++`);
             minimalLog('system', 'scanning process completed.');
             console.log('\n[!] press ctrl+c to terminate the process, then restart the script to return to the menu.');
         }
         
         const cleanName = state.activeTargetFile ? state.activeTargetFile.replace('.txt', '') : '';
-        if (finalize && cleanName && fs.existsSync(`checkpoint_${cleanName}.json`)) {
-            fs.unlinkSync(`checkpoint_${cleanName}.json`);
+        const checkpointFile = paths.checkpoint(`checkpoint_${cleanName}.json`);
+        if (finalize && cleanName && fs.existsSync(checkpointFile)) {
+            fs.unlinkSync(checkpointFile);
         }
         
         if (closeSocket) {
@@ -537,7 +547,7 @@ const runScanner = async (sock, {
         
         if (persist) {
             minimalLog('system', '[memory dump] saving remaining data to disk...');
-            saveReport();
+            persistScanArtifacts(root);
         }
         
         if (exitOnError) process.exit(1);

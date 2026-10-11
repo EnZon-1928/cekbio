@@ -1,7 +1,8 @@
 // file: index.js
 const { exec, spawn } = require('child_process');
 const { runMainMenu } = require('./io/menu');
-const { state, saveReport } = require('./core/state');
+const { state, persistScanArtifacts } = require('./core/state');
+const { migrateLegacyRuntimeData } = require('./core/runtime-storage');
 
 const isAndroid = process.platform === 'android';
 
@@ -18,7 +19,7 @@ const emergencyStop = () => {
     if (state.activeTargetFile) {
         console.log('\n[!] emergency stop triggered (ctrl+c).');
         console.log('[!] [memory dump] saving remaining ram data to disk...');
-        saveReport();
+        persistScanArtifacts();
     }
 
     if (isAndroid) {
@@ -66,6 +67,13 @@ const restartLocalApplication = async telegramBot => {
 };
 
 const runTelegramBot = async () => {
+    try {
+        migrateLegacyRuntimeData();
+    } catch (error) {
+        console.error(error.message || 'Could not prepare cekbio data folders.');
+        process.exitCode = 1;
+        return;
+    }
     require('dotenv').config();
     const { createLocalService } = require('./core/local-service');
     const { startTelegramBot } = require('./telegram/bot');
@@ -99,5 +107,11 @@ if (process.argv[2] === 'local') {
     console.error('The web dashboard is not included in this branch. Use the main branch for the web version.');
     process.exitCode = 1;
 } else {
-    runMainMenu();
+    try {
+        migrateLegacyRuntimeData();
+        runMainMenu();
+    } catch (error) {
+        console.error(error.message || 'Could not prepare cekbio data folders.');
+        process.exitCode = 1;
+    }
 }

@@ -123,7 +123,7 @@ test('only flat generated result text files may be sent to Telegram', () => {
     assert.equal(isResultFilename('result_business_targets.txt'), true);
     assert.equal(isResultFilename('result_personal_targets with spaces.txt'), true);
     assert.equal(isResultFilename('target_business_targets.json'), false);
-    assert.equal(isResultFilename('report_business_targets.txt'), false);
+    assert.equal(isResultFilename('other_business_targets.txt'), false);
     assert.equal(isResultFilename('../result_business_targets.txt'), false);
     assert.equal(isResultFilename('result_business_targets.json'), false);
 });

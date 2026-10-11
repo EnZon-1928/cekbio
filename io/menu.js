@@ -4,10 +4,12 @@ const fs = require('fs');
 
 const { startEngine } = require('../core/engine');
 const { addSender, manageSenderSession } = require('../core/sender');
+const { createRuntimePaths } = require('../core/runtime-storage');
 
 const askQuestion = (rl) => (question) => new Promise(resolve => rl.question(question, resolve));
 
 const runMainMenu = async () => {
+    const paths = createRuntimePaths();
     console.clear();
     console.log('=== main menu ===');
     console.log('1. run scanner');
@@ -28,7 +30,7 @@ const runMainMenu = async () => {
             await startEngine(runMainMenu);
         } else if (choice === '2') {
             rl.close();
-            await addSender();
+            await addSender({ root: paths.root });
             console.log('\nreturning to menu in 2 seconds...');
             setTimeout(runMainMenu, 2000);
         } else if (choice === '3') {
@@ -51,12 +53,13 @@ const runMainMenu = async () => {
 };
 
 const runSenderManagementMenu = async () => {
+    const paths = createRuntimePaths();
     console.clear();
     console.log('=== manage senders ===');
     
     let sessionFolders = [];
     try {
-        sessionFolders = fs.readdirSync('.').filter(f => f.startsWith('session_'));
+        sessionFolders = fs.readdirSync(paths.senders).filter(f => f.startsWith('session_'));
     } catch (e) {
         console.log('failed to track session folders:\n', e.stack);
     }
@@ -75,16 +78,16 @@ const runSenderManagementMenu = async () => {
     try {
         if (choice === '1') {
             rl.close();
-            await manageSenderSession('all', sessionFolders);
+            await manageSenderSession('all', sessionFolders, { root: paths.root });
             setTimeout(runSenderManagementMenu, 4000);
         } else if (choice === '2') {
             const sessionId = await prompt('enter session number (e.g., 1): ');
             rl.close();
-            await manageSenderSession('specific', sessionId);
+            await manageSenderSession('specific', sessionId, { root: paths.root });
             setTimeout(runSenderManagementMenu, 4000);
         } else if (choice === '3') {
             rl.close();
-            await manageSenderSession('clean', sessionFolders);
+            await manageSenderSession('clean', sessionFolders, { root: paths.root });
             setTimeout(runSenderManagementMenu, 3000);
         } else if (choice === '0') {
             rl.close();

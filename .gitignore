@@ -1,3 +1,9 @@
 a.log
 node_modules/
 .env
+/senders/
+/targets/
+/results/
+/result-data/
+/checkpoint/
+/logs/

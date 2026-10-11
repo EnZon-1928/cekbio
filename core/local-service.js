@@ -6,6 +6,7 @@ const { state } = require('./state');
 const { startEngine } = require('./engine');
 const { addSender, pingSender } = require('./sender');
 const { createUpdateManager } = require('./update-manager');
+const { migrateLegacyRuntimeData } = require('./runtime-storage');
 const { subscribeLogs } = require('../utils/logger');
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -20,7 +21,7 @@ const isValidResultFilename = filename => typeof filename === 'string'
 
 const createError = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 
-const listSendersIn = root => fs.readdirSync(root, { withFileTypes: true })
+const listSendersIn = directory => fs.readdirSync(directory, { withFileTypes: true })
     .filter(entry => SESSION_PATTERN.test(entry.name) && entry.isDirectory())
     .map(entry => entry.name)
     .sort((a, b) => {
@@ -29,9 +30,9 @@ const listSendersIn = root => fs.readdirSync(root, { withFileTypes: true })
         return Number.isFinite(aId) && Number.isFinite(bId) ? aId - bId : a.localeCompare(b);
     });
 
-const listTargetsIn = root => fs.readdirSync(root, { withFileTypes: true })
+const listTargetsIn = directory => fs.readdirSync(directory, { withFileTypes: true })
     .filter(entry => entry.isFile() && entry.name.endsWith('.txt')
-        && !entry.name.includes('report_') && !entry.name.includes('result_'))
+        && !entry.name.includes('result_'))
     .map(entry => entry.name)
     .sort();
 
@@ -40,7 +41,7 @@ const validateTargetFilename = filename => typeof filename === 'string'
     && !filename.includes('/') && !filename.includes('\\')
     && !/[\u0000-\u001f\u007f]/.test(filename)
     && filename.length > 4 && filename.endsWith('.txt')
-    && !filename.includes('report_') && !filename.includes('result_');
+    && !filename.includes('result_');
 
 const numbersFromWorkbook = buffer => {
     let workbook;
@@ -105,6 +106,7 @@ const createLocalService = ({
     onRestart = () => {},
     updateManager = createUpdateManager({ root })
 } = {}) => {
+    const paths = migrateLegacyRuntimeData(root);
     let scanJob = null;
     let senderJob = null;
     let updateJob = null;
@@ -118,22 +120,21 @@ const createLocalService = ({
         || updateIsRunning();
     const scanIsRunning = () => scanJob?.status === 'starting' || scanJob?.status === 'running'
         || state.isEngineRunning;
-    const listSenders = () => listSendersIn(root);
-    const listTargets = () => listTargetsIn(root);
-    const resolveInRoot = filename => path.resolve(root, filename);
+    const listSenders = () => listSendersIn(paths.senders);
+    const listTargets = () => listTargetsIn(paths.targets);
 
     const hasResultData = filename => {
         const match = filename.match(RESULT_PATTERN);
         if (!match) return false;
         const [, category, targetName] = match;
-        const dataPath = resolveInRoot(`target_${category}_${targetName}.json`);
+        const dataPath = paths.resultDataFile(`target_${category}_${targetName}.json`);
         if (!fs.existsSync(dataPath)) return false;
         const data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
         if (!Array.isArray(data)) throw new Error(`Internal result data is invalid for ${filename}.`);
         return data.length > 0;
     };
 
-    const listResults = () => fs.readdirSync(root, { withFileTypes: true })
+    const listResults = () => fs.readdirSync(paths.results, { withFileTypes: true })
         .filter(entry => entry.isFile() && isValidResultFilename(entry.name) && hasResultData(entry.name))
         .map(entry => entry.name)
         .sort();
@@ -142,7 +143,7 @@ const createLocalService = ({
         const targets = listTargets();
         const checkpoints = {};
         for (const target of targets) {
-            const checkpointPath = resolveInRoot(`checkpoint_${target.replace('.txt', '')}.json`);
+            const checkpointPath = paths.checkpoint(`checkpoint_${target.replace('.txt', '')}.json`);
             if (fs.existsSync(checkpointPath)) {
                 try {
                     checkpoints[target] = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
@@ -168,7 +169,7 @@ const createLocalService = ({
             }
             senderHealthPromise = Promise.all(senders.map(async folder => {
                 try {
-                    const result = await checkSender(folder);
+                    const result = await checkSender(folder, { root });
                     senderHealth.set(folder, { status: result.status, checkedAt: Date.now() });
                 } catch (error) {
                     senderHealth.set(folder, {
@@ -252,9 +253,9 @@ const createLocalService = ({
             throw createError('Choose a .txt file no larger than 10 MB.');
         }
         if (!validateTargetFilename(name)) {
-            throw createError('Target filename must be a valid .txt filename and cannot contain report_ or result_.');
+            throw createError('Target filename must be a valid .txt filename and cannot contain result_.');
         }
-        const targetPath = resolveInRoot(name);
+        const targetPath = paths.target(name);
         try {
             fs.writeFileSync(targetPath, contents, { flag: 'wx' });
         } catch (error) {
@@ -289,7 +290,7 @@ const createLocalService = ({
             throw createError('No phone numbers were found. Enter numbers as text or as whole-number cells with at least six digits.', 422);
         }
         try {
-            fs.writeFileSync(resolveInRoot(targetName), `${numbers.join('\n')}\n`, { flag: 'wx' });
+            fs.writeFileSync(paths.target(targetName), `${numbers.join('\n')}\n`, { flag: 'wx' });
         } catch (error) {
             if (error.code === 'EEXIST') {
                 throw createError(`A target list named "${targetName}" already exists.`, 409);
@@ -310,8 +311,8 @@ const createLocalService = ({
         }
         if (confirm !== true) throw createError('Explicit confirmation is required to remove a target list.');
         if (!listTargets().includes(filename)) throw createError('Target list not found.', 404);
-        fs.unlinkSync(resolveInRoot(filename));
-        const checkpointPath = resolveInRoot(`checkpoint_${filename.replace('.txt', '')}.json`);
+        fs.unlinkSync(paths.target(filename));
+        const checkpointPath = paths.checkpoint(`checkpoint_${filename.replace('.txt', '')}.json`);
         const checkpointDeleted = fs.existsSync(checkpointPath);
         if (checkpointDeleted) fs.unlinkSync(checkpointPath);
         return { deleted: filename, checkpointDeleted };
@@ -327,9 +328,9 @@ const createLocalService = ({
             throw createError('Result not found.', 404);
         }
         const [, , targetName] = RESULT_PATTERN.exec(filename);
-        const checkpointPath = resolveInRoot(`checkpoint_${targetName}.json`);
+        const checkpointPath = paths.checkpoint(`checkpoint_${targetName}.json`);
         const checkpointDeleted = fs.existsSync(checkpointPath);
-        fs.unlinkSync(resolveInRoot(filename));
+        fs.unlinkSync(paths.result(filename));
         if (checkpointDeleted) fs.unlinkSync(checkpointPath);
         return { deleted: filename, checkpointDeleted };
     };
@@ -350,7 +351,7 @@ const createLocalService = ({
                 throw createError('Cannot delete a sender while a scan is running.', 409);
             }
             if (!listSenders().includes(folder)) throw createError('Sender session not found.', 404);
-            fs.rmSync(resolveInRoot(folder), { recursive: true });
+            fs.rmSync(paths.sender(folder), { recursive: true });
             senderHealth.delete(folder);
             senderJob.status = 'completed';
             return { deleted: folder };
@@ -370,6 +371,7 @@ const createLocalService = ({
         }
         senderJob = { status: 'running', pairingCode: null, sessionFolder: null, error: null };
         createSender({
+            root,
             phoneNumber,
             onPairingCode: (code, folder) => {
                 senderJob.pairingCode = code;
@@ -423,6 +425,7 @@ const createLocalService = ({
         };
         const pendingHealthCheck = senderHealthPromise;
         Promise.resolve(pendingHealthCheck).then(() => runEngine(null, {
+            root,
             targetFile,
             ...(multiSender ? {
                 sessionFolders: selectedSenders,
@@ -507,7 +510,7 @@ const createLocalService = ({
             if (!isValidResultFilename(filename) || !listResults().includes(filename)) {
                 throw createError('Result not found.', 404);
             }
-            return resolveInRoot(filename);
+            return paths.result(filename);
         },
         getResults: () => ({ results: listResults() }),
         getSenderHealth,

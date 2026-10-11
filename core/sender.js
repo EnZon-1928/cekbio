@@ -3,43 +3,48 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLat
 const pino = require('pino');
 const readline = require('readline');
 const fs = require('fs');
+const { ensureRuntimeDirectories } = require('./runtime-storage');
 
 const loggerPino = pino({ level: 'silent' });
 const askQuestion = (rl) => (question) => new Promise(resolve => rl.question(question, resolve));
 
-const writeLog = (message) => {
+const writeLog = (message, root = process.cwd()) => {
     try {
+        const paths = ensureRuntimeDirectories(root);
         const timestamp = new Date().toLocaleString('id-ID');
-        fs.appendFileSync('log.txt', `[${timestamp}] ${message}\n`);
+        fs.appendFileSync(paths.log('log.txt'), `[${timestamp}] ${message}\n`);
     } catch (e) {
         console.log('\n[!] failed to write log:\n' + e.stack);
     }
 };
 
-const getHighestSessionId = () => {
+const getHighestSessionId = (root = process.cwd()) => {
     try {
-        const existingFolders = fs.readdirSync('.').filter(f => f.startsWith('session_'));
+        const paths = ensureRuntimeDirectories(root);
+        const existingFolders = fs.readdirSync(paths.senders).filter(f => f.startsWith('session_'));
         if (existingFolders.length === 0) return 1;
         const sessionNumbers = existingFolders.map(f => parseInt(f.replace('session_', ''))).filter(n => !isNaN(n));
         return Math.max(...sessionNumbers) + 1;
     } catch (e) {
-        writeLog('error finding session: ' + e.stack);
+        writeLog('error finding session: ' + e.stack, root);
         return 1;
     }
 };
 
 const addSender = async (options = {}) => {
+    const root = options.root || process.cwd();
+    const paths = ensureRuntimeDirectories(root);
     const interactive = options.phoneNumber === undefined;
     const rl = interactive ? readline.createInterface({ input: process.stdin, output: process.stdout }) : null;
     const prompt = rl ? askQuestion(rl) : null;
     const closePrompt = () => rl?.close();
     
     try {
-        const newId = getHighestSessionId();
+        const newId = getHighestSessionId(root);
         const newFolder = `session_${newId}`;
         console.log(`\npreparing new sender in [${newFolder}]...`);
         
-        const { state, saveCreds } = await useMultiFileAuthState(newFolder);
+        const { state, saveCreds } = await useMultiFileAuthState(paths.sender(newFolder));
         
         const phoneNumber = interactive ? await prompt('enter sender number (e.g., 628xxx): ') : options.phoneNumber;
         const cleanNumber = phoneNumber.replace(/\D/g, '');
@@ -73,8 +78,8 @@ const addSender = async (options = {}) => {
                     console.log('waiting for sender response... (max 3 minutes)');
                     options.onPairingCode?.(code, newFolder);
                 } catch (errPairing) {
-                    writeLog(`failed to request pairing for ${cleanNumber}: ` + errPairing.stack);
-                    console.log('\n[!] failed to request pairing code. check connection or log.txt');
+                    writeLog(`failed to request pairing for ${cleanNumber}: ` + errPairing.stack, root);
+                    console.log('\n[!] failed to request pairing code. check logs/log.txt');
                     sock.ws.close();
                     sock.ev.removeAllListeners();
                     if (!interactive) throw errPairing;
@@ -84,7 +89,7 @@ const addSender = async (options = {}) => {
 
             return new Promise((resolve) => {
                 let timeoutLimit = setTimeout(() => {
-                    writeLog(`[${newFolder}] timeout. sender unresponsive for 180 seconds.`);
+                    writeLog(`[${newFolder}] timeout. sender unresponsive for 180 seconds.`, root);
                     console.log('\n[!] timeout. sender failed to connect (180s).');
                     sock.ws.close();
                     sock.ev.removeAllListeners();
@@ -104,7 +109,7 @@ const addSender = async (options = {}) => {
                         const reasonCode = lastDisconnect?.error?.output?.statusCode;
                         const errorMessage = lastDisconnect?.error?.message;
                         
-                        writeLog(`[${newFolder}] connection closed. status code: ${reasonCode} | message: ${errorMessage}`);
+                        writeLog(`[${newFolder}] connection closed. status code: ${reasonCode} | message: ${errorMessage}`, root);
                         
                         if (reasonCode === DisconnectReason.loggedOut || reasonCode === 403 || reasonCode === 401) {
                             console.log(`\n[!] failed. device logged out or banned (code: ${reasonCode}).`);
@@ -113,7 +118,7 @@ const addSender = async (options = {}) => {
                             sock.ev.removeAllListeners();
                             resolve({ folder: newFolder, status: 'failed' });
                         } else {
-                            writeLog(`[${newFolder}] micro-disconnect (${reasonCode}). executing automatic reconnect...`);
+                            writeLog(`[${newFolder}] micro-disconnect (${reasonCode}). executing automatic reconnect...`, root);
                             
                             clearTimeout(timeoutLimit);
                             sock.ws.close();
@@ -129,18 +134,19 @@ const addSender = async (options = {}) => {
         return await connectEngine();
 
     } catch (e) {
-        writeLog('fatal error adding sender: ' + e.stack);
-        console.log('\nfatal error adding sender, check log.txt\n' + e.stack);
+        writeLog('fatal error adding sender: ' + e.stack, root);
+        console.log('\nfatal error adding sender, check logs/log.txt\n' + e.stack);
         closePrompt();
         if (!interactive) throw e;
     }
 };
 
-const pingSender = async (sessionFolder) => {
+const pingSender = async (sessionFolder, { root = process.cwd() } = {}) => {
+    const paths = ensureRuntimeDirectories(root);
     return new Promise(async (resolve) => {
         try {
             console.log(`pinging [${sessionFolder}]...`);
-            const { state } = await useMultiFileAuthState(sessionFolder);
+            const { state } = await useMultiFileAuthState(paths.sender(sessionFolder));
             
             const checkConnection = async () => {
                 const { version } = await fetchLatestBaileysVersion();
@@ -155,7 +161,7 @@ const pingSender = async (sessionFolder) => {
 
                 return new Promise((res) => {
                     let timeoutLimit = setTimeout(() => {
-                        writeLog(`ping timeout for ${sessionFolder}`);
+                        writeLog(`ping timeout for ${sessionFolder}`, root);
                         sock.ws.close();
                         sock.ev.removeAllListeners();
                         res({ folder: sessionFolder, status: 'timeout/dead' });
@@ -171,7 +177,7 @@ const pingSender = async (sessionFolder) => {
                         } else if (connection === 'close') {
                             const reasonCode = lastDisconnect?.error?.output?.statusCode;
                             if (reasonCode === DisconnectReason.loggedOut || reasonCode === 401 || reasonCode === 403) {
-                                writeLog(`ping banned/logout for ${sessionFolder}. status code: ${reasonCode}`);
+                                writeLog(`ping banned/logout for ${sessionFolder}. status code: ${reasonCode}`, root);
                                 clearTimeout(timeoutLimit);
                                 sock.ws.close();
                                 sock.ev.removeAllListeners();
@@ -200,25 +206,26 @@ const pingSender = async (sessionFolder) => {
             resolve(finalResult);
             
         } catch (e) {
-            writeLog(`ping error for ${sessionFolder}: ` + e.stack);
+            writeLog(`ping error for ${sessionFolder}: ` + e.stack, root);
             resolve({ folder: sessionFolder, status: 'error' });
         }
     });
 };
 
-const manageSenderSession = async (mode, data) => {
+const manageSenderSession = async (mode, data, { root = process.cwd() } = {}) => {
+    const paths = ensureRuntimeDirectories(root);
     try {
         if (mode === 'all') {
             const sessionFolders = data;
             if (sessionFolders.length === 0) return console.log('no senders found.');
             for (let folder of sessionFolders) {
-                const result = await pingSender(folder);
+                const result = await pingSender(folder, { root });
                 console.log(`  -> status: ${result.status}`);
             }
         } else if (mode === 'specific') {
             const targetFolder = `session_${data}`;
-            if (fs.existsSync(targetFolder)) {
-                const result = await pingSender(targetFolder);
+            if (fs.existsSync(paths.sender(targetFolder))) {
+                const result = await pingSender(targetFolder, { root });
                 console.log(`  -> status: ${result.status}`);
             } else {
                 console.log(`[!] directory ${targetFolder} not found.`);
@@ -227,9 +234,9 @@ const manageSenderSession = async (mode, data) => {
             const sessionFolders = data;
             console.log('\ninitiating dead sender cleanup...');
             for (let folder of sessionFolders) {
-                const result = await pingSender(folder);
+                const result = await pingSender(folder, { root });
                 if (result.status === 'banned/logged_out' || result.status === 'timeout/dead') {
-                    fs.rmSync(folder, { recursive: true, force: true });
+                    fs.rmSync(paths.sender(folder), { recursive: true, force: true });
                     console.log(`[+] ${folder} deleted.`);
                 } else {
                     console.log(`[-] ${folder} is alive, preserved.`);
@@ -238,7 +245,7 @@ const manageSenderSession = async (mode, data) => {
             console.log('cleanup complete.');
         }
     } catch (e) {
-        writeLog('error managing sender: ' + e.stack);
+        writeLog('error managing sender: ' + e.stack, root);
     }
 };
 

@@ -10,13 +10,13 @@
 
 - This project is a Node.js/CommonJS WhatsApp scanning application with an interactive CLI and a Telegram bot on the `telegram_bot` branch.
 - Telegram is a local control interface. Keep its operations as thin adapters over shared local operations; do not duplicate or rewrite scan and sender logic.
-- Preserve Baileys integration, sender session format, checkpoint behavior, report contents, and CLI workflows unless the user explicitly requests a behavior change.
+- Preserve Baileys integration, sender session format, result contents, checkpoint behavior, and CLI workflows unless the user explicitly requests a behavior change.
 - Do not introduce scan controls or capabilities that the engine does not safely support.
 - The web dashboard and HTTP API belong to the separate `main` branch; do not reintroduce them on `telegram_bot`.
 
 ## Local operation and data
 
-- Do not expose sender credentials, sessions, targets, or reports remotely.
+- Do not expose sender credentials, sessions, targets, or results remotely.
 - Validate uploaded filenames, request input, and filesystem operations. Keep sender deletion explicit and confirmed.
 - Keep internal `target_*` JSON results on disk for recovery; do not list or send them through Telegram.
 - A Telegram shutdown action may stop only the local Node.js application, never the operating system; require confirmation and refuse shutdown while a scan or sender operation is active.

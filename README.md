@@ -82,7 +82,9 @@ Button colors indicate state: green means selected or active, red means inactive
 
 ## Privacy and data
 
-- Sender sessions, target lists, checkpoints, internal result data, and reports remain in the project directory.
+- Runtime data is separated from source files into `senders/`, `targets/`, `results/`, `result-data/`, `checkpoint/`, and `logs/` in the project directory.
+- On first launch after updating, cekbio moves recognized legacy data from the project root into those folders. It does not overwrite conflicts; if a conflict is found, startup explains which files need attention and leaves them in place.
+- Target `.txt` files from the old root are moved to `targets/`; result files, internal recovery JSON, sender sessions, checkpoints, and `log.txt` are moved to their matching folders.
 - The bot accepts updates only from the configured Telegram user ID in a private chat.
 - Target lists, internal `target_*` JSON files, and WhatsApp session credentials are not sent to Telegram.
 - Result `.txt` files are sent only when you explicitly request a download.
@@ -206,8 +208,9 @@ Do not run the CLI and Telegram bot simultaneously with the same sender session.
 - Git is required to clone the project and install its Git-hosted dependencies.
 - Configure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_OWNER_ID` in a private `.env` file before running `npm run local`.
 - Target uploads support `.txt` files and `.xlsx` workbooks up to 10 MB.
-- Generated text result files use the `result_` prefix, for example `result_business_targets.txt`. Internal `target_*` JSON files remain on disk for recovery and are not listed in Telegram.
-- Older `report_*.txt` files are left untouched and excluded from target discovery.
+- Sender session folders (`session_*`) are stored in `senders/`; target `.txt` files are stored in `targets/`.
+- Downloadable result files (`result_*.txt`) are stored in `results/`. Internal `target_*` recovery JSON is stored separately in `result-data/`, and scan checkpoints are stored in `checkpoint/`.
+- Sender logs are stored in `logs/log.txt`. Keep the data folders private; they are excluded from Git.
 - Telegram scans use connected sender sessions as workers. A disconnected sender is excluded; unfinished batches are retried by remaining workers. If no workers remain, the scan saves a checkpoint.
 - `npm run telegram-id` starts a temporary helper that reports your numeric Telegram user ID in the bot's private chat.
 - Run `npm test` to execute the automated test suite.

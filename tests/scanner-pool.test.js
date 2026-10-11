@@ -162,7 +162,7 @@ test('pool pauses with completed batch indexes and resumes without rescanning co
         assert.equal(paused.status, 'paused');
         assert.deepEqual(state.completedBatchIndices, [0]);
         assert.equal(state.targetUnregistered.length, 1);
-        assert.deepEqual(JSON.parse(fs.readFileSync('checkpoint_targets.json', 'utf8')), {
+        assert.deepEqual(JSON.parse(fs.readFileSync(path.join('checkpoint', 'checkpoint_targets.json'), 'utf8')), {
             batchIndex: 1,
             totalBatches: 3,
             multiSender: true,
@@ -170,6 +170,14 @@ test('pool pauses with completed batch indexes and resumes without rescanning co
             batchSize: 1,
             completedBatchIndices: [0]
         });
+        assert.equal(
+            JSON.parse(fs.readFileSync(path.join('result-data', 'target_unregistered_targets.json'), 'utf8')).length,
+            1
+        );
+        assert.equal(
+            fs.existsSync(path.join('results', 'result_unregistered_targets.txt')),
+            true
+        );
 
         let resumeCalls = 0;
         const resumed = await runScannerPool([
@@ -184,7 +192,7 @@ test('pool pauses with completed batch indexes and resumes without rescanning co
         assert.equal(state.targetUnregistered.length, 3);
         assert.equal(state.statistics.unregistered, 3);
         assert.deepEqual(state.completedBatchIndices, []);
-        assert.equal(fs.existsSync('checkpoint_targets.json'), false);
+        assert.equal(fs.existsSync(path.join('checkpoint', 'checkpoint_targets.json')), false);
     } finally {
         process.chdir(originalDirectory);
         fs.rmSync(temporaryDirectory, { recursive: true, force: true });

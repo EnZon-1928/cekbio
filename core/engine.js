@@ -6,6 +6,7 @@ const fs = require('fs');
 
 const { state } = require('./state');
 const { runScanner, runScannerPool } = require('./scanner');
+const { createRuntimePaths, ensureRuntimeDirectories } = require('./runtime-storage');
 
 const loggerPino = pino({ level: 'silent' });
 const askQuestion = (rl) => (question) => new Promise(resolve => rl.question(question, resolve));
@@ -21,7 +22,7 @@ const safeLoadJson = (filePath) => {
     return [];
 };
 
-const resetState = (isResume = false, cleanName = '') => {
+const resetState = (isResume = false, cleanName = '', root = process.cwd()) => {
     if (!isResume) {
         state.targetBusiness = [];
         state.targetPersonal = [];
@@ -29,9 +30,10 @@ const resetState = (isResume = false, cleanName = '') => {
         state.statistics = { registered: 0, unregistered: 0, bioBusiness: 0, noBioBusiness: 0, personal: 0 }; 
         state.batchIndex = 0;
     } else {
-        state.targetBusiness = safeLoadJson(`target_business_${cleanName}.json`);
-        state.targetPersonal = safeLoadJson(`target_personal_${cleanName}.json`);
-        state.targetUnregistered = safeLoadJson(`target_unregistered_${cleanName}.json`);
+        const paths = createRuntimePaths(root);
+        state.targetBusiness = safeLoadJson(paths.resultDataFile(`target_business_${cleanName}.json`));
+        state.targetPersonal = safeLoadJson(paths.resultDataFile(`target_personal_${cleanName}.json`));
+        state.targetUnregistered = safeLoadJson(paths.resultDataFile(`target_unregistered_${cleanName}.json`));
         
         // Recalculate statistics strictly without depending on empty strings.
         state.statistics = {
@@ -49,8 +51,8 @@ const resetState = (isResume = false, cleanName = '') => {
     state.workerProgress = {};
 };
 
-const createScanWorker = async (sessionFolder, onWorkerStatus) => {
-    const { state: authState, saveCreds } = await useMultiFileAuthState(sessionFolder);
+const createScanWorker = async (sessionFolder, onWorkerStatus, paths) => {
+    const { state: authState, saveCreds } = await useMultiFileAuthState(paths.sender(sessionFolder));
     const { version } = await fetchLatestBaileysVersion();
     const sock = makeWASocket({
         version,
@@ -129,7 +131,7 @@ const createScanWorker = async (sessionFolder, onWorkerStatus) => {
     return openPromise;
 };
 
-const runMultiSenderScan = async (sessionFolders, onWorkerStatus) => {
+const runMultiSenderScan = async (sessionFolders, onWorkerStatus, root) => {
     const reportWorkerStatus = (...args) => {
         try {
             onWorkerStatus(...args);
@@ -139,7 +141,7 @@ const runMultiSenderScan = async (sessionFolders, onWorkerStatus) => {
     };
     const workerResults = await Promise.allSettled(sessionFolders.map(folder => {
         reportWorkerStatus(folder, 'checking');
-        return createScanWorker(folder, reportWorkerStatus).catch(error => {
+        return createScanWorker(folder, reportWorkerStatus, createRuntimePaths(root)).catch(error => {
             reportWorkerStatus(folder, 'inactive', error.message);
             throw error;
         });
@@ -150,7 +152,7 @@ const runMultiSenderScan = async (sessionFolders, onWorkerStatus) => {
 
     state.isEngineRunning = true;
     try {
-        const result = await runScannerPool(workers, { onWorkerStatus: reportWorkerStatus });
+        const result = await runScannerPool(workers, { onWorkerStatus: reportWorkerStatus, root });
         return result;
     } finally {
         state.isEngineRunning = false;
@@ -159,6 +161,8 @@ const runMultiSenderScan = async (sessionFolders, onWorkerStatus) => {
 };
 
 const startEngine = async (returnToMenu, webOptions = null) => {
+    const root = webOptions?.root || process.cwd();
+    const paths = ensureRuntimeDirectories(root);
     const interactive = !webOptions;
     const rl = interactive ? readline.createInterface({ input: process.stdin, output: process.stdout }) : null;
     const prompt = rl ? askQuestion(rl) : null;
@@ -170,8 +174,8 @@ const startEngine = async (returnToMenu, webOptions = null) => {
             console.log('=== starting scanner ===');
         }
 
-        const txtFileList = fs.readdirSync('.').filter(f => f.endsWith('.txt')
-            && !f.includes('report_') && !f.includes('result_'));
+        const txtFileList = fs.readdirSync(paths.targets).filter(f => f.endsWith('.txt')
+            && !f.includes('result_'));
         if (interactive) console.log('\n[ target file list ]');
         
         if (txtFileList.length === 0) {
@@ -213,7 +217,7 @@ const startEngine = async (returnToMenu, webOptions = null) => {
 
         let isResume = false;
         let checkpointTracker = null;
-        const checkpointFile = `checkpoint_${cleanName}.json`;
+        const checkpointFile = paths.checkpoint(`checkpoint_${cleanName}.json`);
         if (fs.existsSync(checkpointFile)) {
             try {
                 const tracker = JSON.parse(fs.readFileSync(checkpointFile, 'utf-8'));
@@ -246,12 +250,12 @@ const startEngine = async (returnToMenu, webOptions = null) => {
             }
         }
 
-        resetState(isResume, cleanName);
+        resetState(isResume, cleanName, root);
         if (isResume) {
             state.batchIndex = checkpointTracker.batchIndex;
         }
 
-        const targetData = fs.readFileSync(targetFile, 'utf-8');
+        const targetData = fs.readFileSync(paths.target(targetFile), 'utf-8');
         const numberList = targetData.split('\n').map(n => n.replace(/\D/g, '')).filter(n => n.length > 5);
         
         if (numberList.length === 0) {
@@ -284,7 +288,7 @@ const startEngine = async (returnToMenu, webOptions = null) => {
             const uniqueFolders = [...new Set(requestedSessionFolders)];
             if (uniqueFolders.length === 0) throw new Error('Select at least one sender session.');
 
-            const sessionList = fs.readdirSync('.').filter(f => f.startsWith('session_'));
+            const sessionList = fs.readdirSync(paths.senders).filter(f => f.startsWith('session_'));
             if (uniqueFolders.some(folder => !sessionList.includes(folder))) {
                 throw new Error('One or more selected sender sessions were not found.');
             }
@@ -309,7 +313,8 @@ const startEngine = async (returnToMenu, webOptions = null) => {
             closePrompt();
             const result = await runMultiSenderScan(
                 uniqueFolders,
-                webOptions.onWorkerStatus || (() => {})
+                webOptions.onWorkerStatus || (() => {}),
+                root
             );
             if (result.paused) {
                 webOptions.onPaused?.(result);
@@ -319,7 +324,7 @@ const startEngine = async (returnToMenu, webOptions = null) => {
             return result;
         }
 
-        const sessionList = fs.readdirSync('.').filter(f => f.startsWith('session_'));
+        const sessionList = fs.readdirSync(paths.senders).filter(f => f.startsWith('session_'));
         if (interactive) console.log('\n[ active sender list ]');
         
         if (sessionList.length === 0) {
@@ -372,7 +377,8 @@ const startEngine = async (returnToMenu, webOptions = null) => {
             closePrompt();
             const result = await runMultiSenderScan(
                 [sessionFolder],
-                webOptions?.onWorkerStatus || (() => {})
+                webOptions?.onWorkerStatus || (() => {}),
+                root
             );
             if (result.paused) webOptions?.onPaused?.(result);
             else webOptions?.onComplete?.(result);
@@ -382,7 +388,7 @@ const startEngine = async (returnToMenu, webOptions = null) => {
         if (interactive) console.log(`\nconnecting sender [${sessionFolder}]...`);
         closePrompt();
 
-        const { state: authState, saveCreds } = await useMultiFileAuthState(sessionFolder);
+        const { state: authState, saveCreds } = await useMultiFileAuthState(paths.sender(sessionFolder));
         const { version } = await fetchLatestBaileysVersion();
         
         const sock = makeWASocket({
@@ -402,7 +408,7 @@ const startEngine = async (returnToMenu, webOptions = null) => {
                 console.log(`\n[+] sender connected. initiating scanner!`);
                 state.isEngineRunning = true;
                 try {
-                    await runScanner(sock, { exitOnError: interactive });
+                    await runScanner(sock, { exitOnError: interactive, root });
                     state.isEngineRunning = false;
                     webOptions?.onComplete?.();
                 } catch (e) {

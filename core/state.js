@@ -1,6 +1,7 @@
 // file: core/state.js
 const fs = require('fs');
 const { minimalLog } = require('../utils/logger');
+const { ensureRuntimeDirectories } = require('./runtime-storage');
 
 // Strict memory vault, pure RAM diet active
 const state = {
@@ -18,8 +19,9 @@ const state = {
     statistics: { registered: 0, unregistered: 0, bioBusiness: 0, noBioBusiness: 0, personal: 0 }
 };
 
-const saveReport = () => {
+const persistScanArtifacts = (root = process.cwd()) => {
     try {
+        const paths = ensureRuntimeDirectories(root);
         const completionTime = new Date().toLocaleString('id-ID');
         const cleanName = state.activeTargetFile ? state.activeTargetFile.replace('.txt', '') : 'unknown';
 
@@ -27,7 +29,7 @@ const saveReport = () => {
         state.targetBusiness.sort((a, b) => b.tier - a.tier);
         const logBusinessSorted = state.targetBusiness.map(item => item.logString).filter(Boolean);
 
-        fs.writeFileSync(`target_business_${cleanName}.json`, JSON.stringify(state.targetBusiness, null, 4));
+        fs.writeFileSync(paths.resultDataFile(`target_business_${cleanName}.json`), JSON.stringify(state.targetBusiness, null, 4));
         let businessContent = `╔═══════════════════════════════╗\n║ RADAR GATLING - WA BUSINESS   ║\n╚═══════════════════════════════╝\n`;
         businessContent += `∟ 📅 Date          : ${completionTime}\n`;
         businessContent += `∟ 🔢 Total Found   : ${state.targetBusiness.length}\n\n`;
@@ -36,10 +38,10 @@ const saveReport = () => {
         businessContent += `∟ 📵 No Desc       : ${state.statistics.noBioBusiness}\n\n`;
         businessContent += `──────── 📝 NUMBER DATA ────────\n`;
         businessContent += logBusinessSorted.length > 0 ? logBusinessSorted.join('\n\n') : `   (empty)\n`;
-        fs.writeFileSync(`result_business_${cleanName}.txt`, businessContent);
+        fs.writeFileSync(paths.result(`result_business_${cleanName}.txt`), businessContent);
 
         // 2. Process Personal Data
-        fs.writeFileSync(`target_personal_${cleanName}.json`, JSON.stringify(state.targetPersonal, null, 4));
+        fs.writeFileSync(paths.resultDataFile(`target_personal_${cleanName}.json`), JSON.stringify(state.targetPersonal, null, 4));
         const mappedPersonalLog = state.targetPersonal.map(data => {
             let bioFormat = data.bio ? data.bio.replace(/\n/g, '\n     │             ') : undefined;
             let logData = `   • ${data.number}\n`;
@@ -61,10 +63,10 @@ const saveReport = () => {
         personalContent += `∟ 🔢 Total Accounts: ${state.targetPersonal.length}\n\n`;
         personalContent += `──────── 📝 NUMBER DATA ────────\n`;
         personalContent += mappedPersonalLog.length > 0 ? mappedPersonalLog.join('\n\n') : `   (empty)\n`;
-        fs.writeFileSync(`result_personal_${cleanName}.txt`, personalContent);
+        fs.writeFileSync(paths.result(`result_personal_${cleanName}.txt`), personalContent);
 
         // 3. Process Unregistered Data
-        fs.writeFileSync(`target_unregistered_${cleanName}.json`, JSON.stringify(state.targetUnregistered, null, 4));
+        fs.writeFileSync(paths.resultDataFile(`target_unregistered_${cleanName}.json`), JSON.stringify(state.targetUnregistered, null, 4));
         const mappedUnregisteredLog = state.targetUnregistered.map(data => `   • ${data.number}`);
         
         let unregisteredContent = `╔═══════════════════════════════╗\n║ RADAR REPORT - UNREGISTERED   ║\n╚═══════════════════════════════╝\n`;
@@ -72,7 +74,7 @@ const saveReport = () => {
         unregisteredContent += `∟ 🔢 Total Dead    : ${state.targetUnregistered.length}\n\n`;
         unregisteredContent += `────── 🚫 NOT REGISTERED ───────\n`;
         unregisteredContent += mappedUnregisteredLog.length > 0 ? mappedUnregisteredLog.join('\n') : `   (empty)\n`;
-        fs.writeFileSync(`result_unregistered_${cleanName}.txt`, unregisteredContent);
+        fs.writeFileSync(paths.result(`result_unregistered_${cleanName}.txt`), unregisteredContent);
 
         if (state.activeTargetFile) {
             const checkpoint = {
@@ -85,7 +87,7 @@ const saveReport = () => {
                 checkpoint.batchSize = state.scanBatchSize;
                 checkpoint.completedBatchIndices = state.completedBatchIndices;
             }
-            fs.writeFileSync(`checkpoint_${cleanName}.json`, JSON.stringify(checkpoint));
+            fs.writeFileSync(paths.checkpoint(`checkpoint_${cleanName}.json`), JSON.stringify(checkpoint));
         }
 
     } catch (e) {
@@ -93,4 +95,4 @@ const saveReport = () => {
     }
 };
 
-module.exports = { state, saveReport };
+module.exports = { state, persistScanArtifacts };

@@ -6,6 +6,7 @@ const path = require('node:path');
 const XLSX = require('xlsx');
 
 const { createLocalService } = require('../core/local-service');
+const { createRuntimePaths } = require('../core/runtime-storage');
 const { state } = require('../core/state');
 
 const withTemporaryRoot = async (t, run) => {
@@ -53,10 +54,11 @@ test('target uploads validate filenames, reject overwrites, and convert XLSX num
         ]), 'Contacts');
         const contents = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
         const result = service.uploadTargetWorkbook({ name: 'contacts.xlsx', contents });
+        const paths = createRuntimePaths(root);
 
         assert.equal(result.target, 'contacts.txt');
         assert.equal(result.importedNumbers, 2);
-        assert.equal(fs.readFileSync(path.join(root, 'contacts.txt'), 'utf8'), '628123456789\n628987654321\n');
+        assert.equal(fs.readFileSync(paths.target('contacts.txt'), 'utf8'), '628123456789\n628987654321\n');
         assert.throws(
             () => service.uploadTargetWorkbook({ name: 'invalid.xlsx', contents: Buffer.from('not xlsx') }),
             /valid XLSX/
@@ -148,6 +150,7 @@ test('result listing hides internal JSON and deletion requires explicit confirma
         fs.writeFileSync(path.join(root, 'result_unregistered_targets.txt'), 'result');
         fs.writeFileSync(path.join(root, 'checkpoint_targets.json'), '{"batchIndex":1}');
         const service = createLocalService({ root });
+        const paths = createRuntimePaths(root);
 
         assert.deepEqual(service.getResults(), {
             results: ['result_personal_targets.txt', 'result_unregistered_targets.txt']
@@ -160,8 +163,8 @@ test('result listing hides internal JSON and deletion requires explicit confirma
             service.deleteResult('result_personal_targets.txt', { confirm: true }),
             { deleted: 'result_personal_targets.txt', checkpointDeleted: true }
         );
-        assert.equal(fs.existsSync(path.join(root, 'checkpoint_targets.json')), false);
-        assert.equal(fs.existsSync(path.join(root, 'result_unregistered_targets.txt')), true);
+        assert.equal(fs.existsSync(paths.checkpoint('checkpoint_targets.json')), false);
+        assert.equal(fs.existsSync(paths.result('result_unregistered_targets.txt')), true);
         assert.deepEqual(service.getResults(), { results: ['result_unregistered_targets.txt'] });
         assert.throws(
             () => service.deleteResult('../result_unregistered_targets.txt', { confirm: true }),
@@ -177,13 +180,14 @@ test('result listing hides internal JSON and deletion requires explicit confirma
 test('result listing re-reads result files and internal findings from disk on every call', async t => {
     await withTemporaryRoot(t, root => {
         const service = createLocalService({ root });
+        const paths = createRuntimePaths(root);
         assert.deepEqual(service.getResults(), { results: [] });
 
-        fs.writeFileSync(path.join(root, 'target_personal_new.json'), '[{"number":"628123456789"}]');
-        fs.writeFileSync(path.join(root, 'result_personal_new.txt'), 'result');
+        fs.writeFileSync(paths.resultDataFile('target_personal_new.json'), '[{"number":"628123456789"}]');
+        fs.writeFileSync(paths.result('result_personal_new.txt'), 'result');
         assert.deepEqual(service.getResults(), { results: ['result_personal_new.txt'] });
 
-        fs.unlinkSync(path.join(root, 'result_personal_new.txt'));
+        fs.unlinkSync(paths.result('result_personal_new.txt'));
         assert.deepEqual(service.getResults(), { results: [] });
     });
 });
@@ -193,6 +197,7 @@ test('sender deletion and application shutdown require confirmation', async t =>
         fs.mkdirSync(path.join(root, 'session_1'));
         let shutdowns = 0;
         const service = createLocalService({ root, onShutdown: () => { shutdowns++; } });
+        const paths = createRuntimePaths(root);
 
         await assert.rejects(
             service.deleteSender('session_1'),
@@ -206,6 +211,7 @@ test('sender deletion and application shutdown require confirmation', async t =>
             await service.deleteSender('session_1', { confirm: true }),
             { deleted: 'session_1' }
         );
+        assert.equal(fs.existsSync(paths.sender('session_1')), false);
         assert.deepEqual(
             await service.requestShutdown({ confirm: true }),
             { message: 'Application is shutting down.' }
