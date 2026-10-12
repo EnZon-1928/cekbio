@@ -7,6 +7,7 @@ const { ensureRuntimeDirectories } = require('./runtime-storage');
 const state = {
     isEngineRunning: false,
     activeTargetFile: '', 
+    activeTargetHash: null,
     batchIndex: 0,
     batches: [],
     multiSenderScan: false,
@@ -79,7 +80,8 @@ const persistScanArtifacts = (root = process.cwd()) => {
         if (state.activeTargetFile) {
             const checkpoint = {
                 batchIndex: state.batchIndex,
-                totalBatches: state.batches.length
+                totalBatches: state.batches.length,
+                ...(state.activeTargetHash ? { targetHash: state.activeTargetHash } : {})
             };
             if (state.multiSenderScan) {
                 checkpoint.multiSender = true;
@@ -90,8 +92,10 @@ const persistScanArtifacts = (root = process.cwd()) => {
             fs.writeFileSync(paths.checkpoint(`checkpoint_${cleanName}.json`), JSON.stringify(checkpoint));
         }
 
+        return true;
     } catch (e) {
         minimalLog('error', 'failed to execute absolute auto-save:\n' + e.stack);
+        return false;
     }
 };
 

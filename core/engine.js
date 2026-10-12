@@ -3,6 +3,7 @@ const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion 
 const pino = require('pino');
 const readline = require('readline');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const { state } = require('./state');
 const { runScanner, runScannerPool } = require('./scanner');
@@ -45,6 +46,7 @@ const resetState = (isResume = false, cleanName = '', root = process.cwd()) => {
         };
     }
     state.batches = [];
+    state.activeTargetHash = null;
     state.multiSenderScan = false;
     state.completedBatchIndices = [];
     state.scanBatchSize = null;
@@ -131,7 +133,7 @@ const createScanWorker = async (sessionFolder, onWorkerStatus, paths) => {
     return openPromise;
 };
 
-const runMultiSenderScan = async (sessionFolders, onWorkerStatus, root) => {
+const runMultiSenderScan = async (sessionFolders, onWorkerStatus, root, pauseControl) => {
     const reportWorkerStatus = (...args) => {
         try {
             onWorkerStatus(...args);
@@ -152,7 +154,11 @@ const runMultiSenderScan = async (sessionFolders, onWorkerStatus, root) => {
 
     state.isEngineRunning = true;
     try {
-        const result = await runScannerPool(workers, { onWorkerStatus: reportWorkerStatus, root });
+        const result = await runScannerPool(workers, {
+            onWorkerStatus: reportWorkerStatus,
+            pauseControl,
+            root
+        });
         return result;
     } finally {
         state.isEngineRunning = false;
@@ -256,6 +262,12 @@ const startEngine = async (returnToMenu, webOptions = null) => {
         }
 
         const targetData = fs.readFileSync(paths.target(targetFile), 'utf-8');
+        const targetHash = crypto.createHash('sha256').update(targetData).digest('hex');
+        if (isResume && checkpointTracker?.targetHash
+            && checkpointTracker.targetHash !== targetHash) {
+            throw new Error('The target file changed after this checkpoint was saved. Start a new scan instead.');
+        }
+        state.activeTargetHash = targetHash;
         const numberList = targetData.split('\n').map(n => n.replace(/\D/g, '')).filter(n => n.length > 5);
         
         if (numberList.length === 0) {
@@ -314,7 +326,8 @@ const startEngine = async (returnToMenu, webOptions = null) => {
             const result = await runMultiSenderScan(
                 uniqueFolders,
                 webOptions.onWorkerStatus || (() => {}),
-                root
+                root,
+                webOptions.pauseControl
             );
             if (result.paused) {
                 webOptions.onPaused?.(result);
@@ -378,7 +391,8 @@ const startEngine = async (returnToMenu, webOptions = null) => {
             const result = await runMultiSenderScan(
                 [sessionFolder],
                 webOptions?.onWorkerStatus || (() => {}),
-                root
+                root,
+                webOptions.pauseControl
             );
             if (result.paused) webOptions?.onPaused?.(result);
             else webOptions?.onComplete?.(result);
@@ -408,9 +422,13 @@ const startEngine = async (returnToMenu, webOptions = null) => {
                 console.log(`\n[+] sender connected. initiating scanner!`);
                 state.isEngineRunning = true;
                 try {
-                    await runScanner(sock, { exitOnError: interactive, root });
+                    const result = await runScanner(sock, {
+                        exitOnError: interactive,
+                        pauseControl: webOptions?.pauseControl,
+                        root
+                    });
                     state.isEngineRunning = false;
-                    webOptions?.onComplete?.();
+                    webOptions?.onComplete?.(result);
                 } catch (e) {
                     state.isEngineRunning = false;
                     console.log('fatal error while calling scanner:\n' + e.stack);

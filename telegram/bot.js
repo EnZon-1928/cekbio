@@ -157,6 +157,9 @@ const formatScanProgress = scan => {
     ];
 
     if (scan.status === 'starting') lines.push('', 'Checking and preparing sender sessions…');
+    if (scan.status === 'pausing') {
+        lines.push('', 'Finishing active batch(es) and saving the checkpoint…');
+    }
     const activeBatchProgress = scan.activeBatchProgress || [];
     for (const progress of activeBatchProgress.slice(0, MAX_SCAN_SENDER_DETAILS)) {
         const batchProgress = `${progress.processedTargets || 0} / ${progress.totalTargets || 0}`;
@@ -181,7 +184,11 @@ const formatScanProgress = scan => {
             lines.push(`Excluded: ${inactive.slice(0, 5).map(folder => limitText(folder, 60)).join(', ')}`);
         }
     }
-    if (scan.status === 'paused') lines.push('', 'Scan paused. Progress is saved; resume it from Scan.');
+    if (scan.status === 'paused') {
+        lines.push('', scan.canResume
+            ? 'Scan paused. Progress is saved; use Resume to continue.'
+            : 'Scan paused. Progress is saved; choose Scan to review the checkpoint.');
+    }
     if (scan.status === 'completed') lines.push('', 'Scan completed successfully.');
     if (scan.status === 'failed' && scan.error) lines.push('', `Error: ${limitText(scan.error, 800)}`);
     const text = lines.join('\n');
@@ -247,7 +254,7 @@ const buildConfirmationKeyboard = (callbackData, action, returnTo) => {
     return keyboard;
 };
 
-const buildScanProgressKeyboard = (callbackData, results = [], requestedPage = 0) => {
+const buildScanProgressKeyboard = (callbackData, results = [], requestedPage = 0, scan = null) => {
     const keyboard = new InlineKeyboard();
     const { page, pageCount, items } = paginateItems(results, requestedPage);
     for (const filename of items) {
@@ -266,6 +273,17 @@ const buildScanProgressKeyboard = (callbackData, results = [], requestedPage = 0
             callbackData({ type: 'scan-result-page', page: page + 1 })
         );
         keyboard.row();
+    }
+    if (scan?.canPause) {
+        keyboard.text(
+            { text: '⏸ Pause scan', style: BUTTON_STYLE.primary },
+            callbackData({ type: 'pause-scan' })
+        ).row();
+    } else if (scan?.status === 'paused' && scan.canResume) {
+        keyboard.text(
+            { text: '▶️ Resume scan', style: BUTTON_STYLE.success },
+            callbackData({ type: 'resume-scan' })
+        ).row();
     }
     keyboard.text(
         { text: '🏠 Main menu', style: BUTTON_STYLE.primary },
@@ -303,7 +321,7 @@ const buildMainMenuKeyboard = ({
         );
 
     addButton('👤 Senders', { type: 'show-senders', page: 0, probeHealth: true });
-    const scanInProgress = ['starting', 'running'].includes(scanStatus);
+    const scanInProgress = ['starting', 'running', 'pausing'].includes(scanStatus);
     addButton(
         scanInProgress ? '🔎 Scan progress' : '🔎 Scan',
         scanInProgress ? { type: 'scan-progress-refresh' } : { type: 'show-scan', page: 0 }
@@ -645,13 +663,13 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                         chatId,
                         messageId,
                         text,
-                        buildScanProgressKeyboard(registerAction, results)
+                        buildScanProgressKeyboard(registerAction, results, 0, scan)
                     );
                     refresh.lastText = text;
                     messageId = message.message_id;
                 }
                 scanProgressErrors.delete(key);
-                if (['starting', 'running'].includes(scan.status)) {
+                if (['starting', 'running', 'pausing'].includes(scan.status)) {
                     scheduleScanProgressRefresh(chatId, messageId, token, refresh.lastText);
                 } else {
                     scanProgressRefreshes.delete(key);
@@ -678,10 +696,10 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         const result = await present(
             ctx,
             text,
-            buildScanProgressKeyboard(registerAction, results, resultPage)
+            buildScanProgressKeyboard(registerAction, results, resultPage, scan)
         );
         const messageId = dashboard.getMessageId(ctx.chat.id) || result?.message_id;
-        if (messageId && ['starting', 'running'].includes(scan?.status)) {
+        if (messageId && ['starting', 'running', 'pausing'].includes(scan?.status)) {
             scheduleScanProgressRefresh(
                 ctx.chat.id,
                 messageId,
@@ -1110,6 +1128,17 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
             }
             case 'scan-progress-refresh':
                 await refreshScanProgress(ctx);
+                return;
+            case 'pause-scan':
+                service.pauseScan();
+                await refreshScanProgress(ctx);
+                return;
+            case 'resume-scan':
+                service.resumeScan();
+                {
+                    const { scan } = service.getStatus();
+                    await showScanProgress(ctx, scan);
+                }
                 return;
             case 'request-result-removal-confirmation':
                 if (action.action?.type !== 'delete-result') {

@@ -243,6 +243,33 @@ test('status and progress keyboards omit manual Refresh buttons', () => {
     assert.deepEqual(JSON.parse(progressKeyboard.inline_keyboard[0][0].callback_data), { type: 'main-menu' });
 });
 
+test('scan progress keyboard exposes pause, pausing, and resumable checkpoint states', () => {
+    const callbackData = payload => JSON.stringify(payload);
+    const active = buildScanProgressKeyboard(callbackData, [], 0, {
+        status: 'running',
+        canPause: true
+    }).inline_keyboard.flat();
+    const pausing = buildScanProgressKeyboard(callbackData, [], 0, {
+        status: 'pausing',
+        canPause: false
+    }).inline_keyboard.flat();
+    const paused = buildScanProgressKeyboard(callbackData, [], 0, {
+        status: 'paused',
+        canResume: true
+    }).inline_keyboard.flat();
+    const unavailable = buildScanProgressKeyboard(callbackData, [], 0, {
+        status: 'paused',
+        canResume: false
+    }).inline_keyboard.flat();
+
+    assert.deepEqual(active.map(button => button.text), ['⏸ Pause scan', '🏠 Main menu']);
+    assert.deepEqual(JSON.parse(active[0].callback_data), { type: 'pause-scan' });
+    assert.deepEqual(pausing.map(button => button.text), ['🏠 Main menu']);
+    assert.deepEqual(paused.map(button => button.text), ['▶️ Resume scan', '🏠 Main menu']);
+    assert.deepEqual(JSON.parse(paused[0].callback_data), { type: 'resume-scan' });
+    assert.deepEqual(unavailable.map(button => button.text), ['🏠 Main menu']);
+});
+
 test('completed scan progress exposes paginated direct result download buttons', () => {
     const callbackData = payload => JSON.stringify(payload);
     const results = Array.from({ length: 7 }, (_, index) =>
@@ -498,14 +525,20 @@ test('scan progress includes confirmed targets, active batch work, and terminal 
     assert.match(progress, /Currently processing: 5 \/ 80/);
     assert.match(progress, /session_1: batch 3\/10 · 5 \/ 10 targets/);
 
-    assert.match(formatScanProgress({
+    const pausedProgress = formatScanProgress({
         status: 'paused',
+        canResume: true,
         targetFile: 'targets.txt',
         completedTargets: 20,
         totalTargets: 100,
         completedBatches: 2,
         totalBatches: 10
-    }), /Progress is saved; resume it from Scan/);
+    });
+    assert.match(pausedProgress, /Progress is saved; use Resume to continue/);
+    assert.match(formatScanProgress({
+        status: 'pausing',
+        targetFile: 'targets.txt'
+    }), /Finishing active batch\(es\) and saving the checkpoint/);
 });
 
 test('scan progress shows at most three sender details and reports the remainder', () => {

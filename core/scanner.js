@@ -63,7 +63,8 @@ const createInputOrderSorter = batches => {
 const runScannerPool = async (workers, {
     onWorkerStatus = () => {},
     persist = persistScanArtifacts,
-    root = process.cwd()
+    root = process.cwd(),
+    pauseControl
 } = {}) => {
     const paths = ensureRuntimeDirectories(root);
     const sortResultsByInputOrder = createInputOrderSorter(sharedState.batches);
@@ -76,6 +77,12 @@ const runScannerPool = async (workers, {
     const activeWorkers = new Set(workers);
     const workersWithCompletedBatch = new Set();
     let saveCounter = 0;
+    const pauseRequested = () => pauseControl?.pauseRequested === true;
+    const persistCheckpoint = () => {
+        if (persist(root) === false) {
+            throw new Error('Could not save scan results and checkpoint.');
+        }
+    };
     const setWorkerStatus = (...args) => {
         try {
             onWorkerStatus(...args);
@@ -85,13 +92,13 @@ const runScannerPool = async (workers, {
     };
 
     const workerLoop = async worker => {
-        while (worker.available && activeWorkers.has(worker)) {
+        while (worker.available && activeWorkers.has(worker) && !pauseRequested()) {
             if (pending.length === 0) return;
             if (workersWithCompletedBatch.has(worker)) {
                 const batchDelay = Math.floor(Math.random() * (1000 - 500 + 1)) + 500;
                 minimalLog('system', `sender ${worker.folder} cooling down ${batchDelay / 1000} seconds...`);
                 await delay(batchDelay, batchDelay);
-                if (!worker.available) break;
+                if (!worker.available || pauseRequested()) break;
             }
             const batchIndex = pending.shift();
             if (batchIndex === undefined) return;
@@ -168,7 +175,7 @@ const runScannerPool = async (workers, {
 
             if (saveCounter >= 10) {
                 sortResultsByInputOrder();
-                persist(root);
+                persistCheckpoint();
                 saveCounter = 0;
             }
         }
@@ -176,7 +183,7 @@ const runScannerPool = async (workers, {
     };
 
     await Promise.all(workers.map(workerLoop));
-    while (pending.length > 0 && activeWorkers.size > 0) {
+    while (pending.length > 0 && activeWorkers.size > 0 && !pauseRequested()) {
         await Promise.all([...activeWorkers].map(workerLoop));
     }
     if (pending.length > 0) {
@@ -186,17 +193,21 @@ const runScannerPool = async (workers, {
         sharedState.batchIndex = 0;
         while (completed.has(sharedState.batchIndex)) sharedState.batchIndex++;
         sortResultsByInputOrder();
-        persist(root);
-        minimalLog('error', 'all scan senders are unavailable; remaining batches were saved for resume.');
+        persistCheckpoint();
+        if (pauseRequested()) {
+            minimalLog('system', 'scan paused at a batch boundary; remaining batches were saved for resume.');
+        } else {
+            minimalLog('error', 'all scan senders are unavailable; remaining batches were saved for resume.');
+        }
         return { status: 'paused', completedBatches: completed.size, remainingBatches: pending.length };
     }
 
     sharedState.batchIndex = sharedState.batches.length;
     sharedState.completedBatchIndices = [];
-    sharedState.multiSenderScan = false;
     sharedState.workerProgress = {};
     sortResultsByInputOrder();
-    persist();
+    persistCheckpoint();
+    sharedState.multiSenderScan = false;
     minimalLog('done', `[results] business: ${sharedState.targetBusiness.length} | personal: ${sharedState.statistics.personal} | unregistered: ${sharedState.statistics.unregistered}++`);
     minimalLog('system', 'multi-sender scanning process completed.');
     const cleanName = sharedState.activeTargetFile.replace('.txt', '');
@@ -245,12 +256,23 @@ const runScanner = async (sock, {
     closeSocket = true,
     logCompletion = true,
     logErrors = true,
-    root = process.cwd()
+    root = process.cwd(),
+    pauseControl
 } = {}) => {
     const paths = ensureRuntimeDirectories(root);
     const state = scanStateStorage.getStore() || sharedState;
+    const pauseRequested = () => pauseControl?.pauseRequested === true;
+    const persistCheckpoint = () => {
+        if (!persist || persistScanArtifacts(root) === false) {
+            throw new Error('Could not save scan results and checkpoint.');
+        }
+    };
     try {
-        for (; state.batchIndex < state.batches.length; state.batchIndex++) {
+        for (; state.batchIndex < state.batches.length;) {
+            if (pauseRequested()) {
+                persistCheckpoint();
+                return { status: 'paused', completedBatches: state.batchIndex };
+            }
             const currentBatch = state.batches[state.batchIndex];
             minimalLog('system', `scanning batch ${state.batchIndex + 1}/${state.batches.length} (${currentBatch.length} targets)...`);
             state.onProgress?.({ processedTargets: 0, phase: 'checking numbers' });
@@ -511,12 +533,21 @@ const runScanner = async (sock, {
             const isMultipleOf10 = (state.batchIndex + 1) % 10 === 0;
             const isFinished = state.batchIndex === state.batches.length - 1;
 
+            state.batchIndex++;
+
             if (persist && (isMultipleOf10 || isFinished)) {
-                minimalLog('system', `[auto-save] sorting and writing data (batch ${state.batchIndex + 1})...`);
-                persistScanArtifacts(root);
+                minimalLog('system', `[auto-save] sorting and writing data (after batch ${state.batchIndex})...`);
+                if (persistScanArtifacts(root) === false) {
+                    throw new Error('Could not save scan results and checkpoint.');
+                }
             }
 
-            if (state.batchIndex < state.batches.length - 1) {
+            if (pauseRequested()) {
+                persistCheckpoint();
+                return { status: 'paused', completedBatches: state.batchIndex };
+            }
+
+            if (state.batchIndex < state.batches.length) {
                 const batchDelay = Math.floor(Math.random() * (1000 - 500 + 1)) + 500;
                 minimalLog('system', `cooling down ${batchDelay / 1000} seconds...`);
                 await delay(batchDelay, batchDelay);
@@ -539,7 +570,7 @@ const runScanner = async (sock, {
             sock.ws.close();
             sock.ev.removeAllListeners();
         }
-        return;
+        return { status: 'completed', completedBatches: state.batches.length };
 
     } catch (e) {
         if (logErrors) minimalLog('error', 'fatal scanner failure:\n' + e.stack);

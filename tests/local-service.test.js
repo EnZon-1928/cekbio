@@ -140,6 +140,107 @@ test('scan service passes the selected target and senders to the existing engine
     });
 });
 
+test('pause requests stay locked until checkpoint persistence and resume reuses saved scan options', async t => {
+    await withTemporaryRoot(t, async root => {
+        const paths = createRuntimePaths(root);
+        fs.mkdirSync(paths.targets, { recursive: true });
+        fs.mkdirSync(paths.sender('session_1'), { recursive: true });
+        fs.writeFileSync(paths.target('targets.txt'), '10000001\n10000002\n');
+        state.isEngineRunning = false;
+        const engineRuns = [];
+        const service = createLocalService({
+            root,
+            runEngine: (_returnToMenu, options) => {
+                state.isEngineRunning = true;
+                let finish;
+                const promise = new Promise(resolve => { finish = resolve; });
+                engineRuns.push({ options, finish });
+                return promise;
+            }
+        });
+
+        service.startScan({
+            targetFile: 'targets.txt',
+            sessionFolders: ['session_1'],
+            batchSize: 1,
+            resume: false
+        });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(service.pauseScan(), { status: 'pausing' });
+        assert.deepEqual(service.pauseScan(), { status: 'pausing' });
+        assert.equal(service.getStatus().scan.status, 'pausing');
+        assert.equal(service.getStatus().scan.canPause, false);
+        assert.throws(
+            () => service.deleteTarget('targets.txt', { confirm: true }),
+            /while a scan is in progress/
+        );
+
+        fs.writeFileSync(paths.checkpoint('checkpoint_targets.json'), JSON.stringify({
+            batchIndex: 1,
+            totalBatches: 2,
+            multiSender: true,
+            targetFile: 'targets.txt',
+            batchSize: 1,
+            completedBatchIndices: [0]
+        }));
+        state.isEngineRunning = false;
+        engineRuns[0].finish({ status: 'paused' });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(service.getStatus().scan.status, 'paused');
+        assert.equal(service.getStatus().scan.canResume, true);
+
+        assert.deepEqual(service.resumeScan(), { status: 'starting' });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(engineRuns.length, 2);
+        assert.equal(engineRuns[1].options.resume, true);
+        assert.deepEqual(engineRuns[1].options.sessionFolders, ['session_1']);
+        state.isEngineRunning = false;
+        engineRuns[1].finish({ status: 'completed' });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(service.getStatus().scan.status, 'completed');
+        state.isEngineRunning = false;
+    });
+});
+
+test('paused scan cannot resume when its target contents no longer match the checkpoint', async t => {
+    await withTemporaryRoot(t, async root => {
+        const paths = createRuntimePaths(root);
+        fs.mkdirSync(paths.targets, { recursive: true });
+        fs.mkdirSync(paths.sender('session_1'), { recursive: true });
+        fs.writeFileSync(paths.target('targets.txt'), '10000001\n10000002\n');
+        let finishScan;
+        const service = createLocalService({
+            root,
+            runEngine: () => {
+                state.isEngineRunning = true;
+                return new Promise(resolve => { finishScan = resolve; });
+            }
+        });
+        service.startScan({
+            targetFile: 'targets.txt',
+            sessionFolders: ['session_1'],
+            batchSize: 1,
+            resume: false
+        });
+        await new Promise(resolve => setImmediate(resolve));
+        fs.writeFileSync(paths.checkpoint('checkpoint_targets.json'), JSON.stringify({
+            batchIndex: 1,
+            totalBatches: 2,
+            targetHash: 'stale-hash',
+            multiSender: true,
+            targetFile: 'targets.txt',
+            batchSize: 1,
+            completedBatchIndices: [0]
+        }));
+        state.isEngineRunning = false;
+        finishScan({ status: 'paused' });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(service.getStatus().scan.canResume, false);
+        assert.throws(() => service.resumeScan(), /checkpoint is unavailable or invalid/);
+        state.isEngineRunning = false;
+    });
+});
+
 test('result listing hides internal JSON and deletion requires explicit confirmation', async t => {
     await withTemporaryRoot(t, root => {
         fs.writeFileSync(path.join(root, 'target_business_targets.json'), '[]');

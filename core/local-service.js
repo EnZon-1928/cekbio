@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const XLSX = require('xlsx');
 
 const { state } = require('./state');
@@ -115,10 +116,10 @@ const createLocalService = ({
     const senderHealth = new Map();
 
     const updateIsRunning = () => ['running', 'restart-pending'].includes(updateJob?.status);
-    const operationIsRunning = () => scanJob?.status === 'starting' || scanJob?.status === 'running'
+    const operationIsRunning = () => ['starting', 'running', 'pausing'].includes(scanJob?.status)
         || senderJob?.status === 'starting' || senderJob?.status === 'running'
         || updateIsRunning();
-    const scanIsRunning = () => scanJob?.status === 'starting' || scanJob?.status === 'running'
+    const scanIsRunning = () => ['starting', 'running', 'pausing'].includes(scanJob?.status)
         || state.isEngineRunning;
     const listSenders = () => listSendersIn(paths.senders);
     const listTargets = () => listTargetsIn(paths.targets);
@@ -156,6 +157,37 @@ const createLocalService = ({
     };
 
     const getTargetNames = () => listTargets();
+
+    const hasResumableCheckpoint = () => {
+        if (!scanJob?.resumeOptions) return false;
+        const checkpointPath = paths.checkpoint(
+            `checkpoint_${scanJob.targetFile.replace('.txt', '')}.json`
+        );
+        if (!fs.existsSync(checkpointPath) || !listTargets().includes(scanJob.targetFile)) return false;
+        try {
+            const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+            const targetData = fs.readFileSync(paths.target(scanJob.targetFile), 'utf8');
+            const numberCount = targetData.split('\n')
+                .map(number => number.replace(/\D/g, ''))
+                .filter(number => number.length > 5).length;
+            if (!checkpoint || typeof checkpoint !== 'object'
+                || !Number.isSafeInteger(checkpoint.batchIndex) || checkpoint.batchIndex < 0
+                || !Number.isSafeInteger(checkpoint.totalBatches) || checkpoint.totalBatches < 1
+                || checkpoint.batchIndex > checkpoint.totalBatches
+                || checkpoint.totalBatches !== Math.ceil(numberCount / scanJob.batchSize)
+                || (checkpoint.targetHash && checkpoint.targetHash !== crypto
+                    .createHash('sha256').update(targetData).digest('hex'))) return false;
+            if (Array.isArray(scanJob.sessionFolders)) {
+                if (checkpoint.multiSender !== true
+                    || checkpoint.targetFile !== scanJob.targetFile
+                    || checkpoint.batchSize !== scanJob.batchSize) return false;
+                return listSenders().length > 0;
+            }
+            return listSenders().includes(scanJob.sessionFolder);
+        } catch {
+            return false;
+        }
+    };
 
     const getSenderHealth = async ({ probe = true, wait = false } = {}) => {
         const senders = listSenders();
@@ -200,7 +232,7 @@ const createLocalService = ({
         const scanStatus = scanJob?.status === 'starting' && state.isEngineRunning
             ? 'running'
             : scanJob?.status;
-        const scanStateReady = !(scanStatus === 'starting' && !state.isEngineRunning);
+        const scanStateReady = !(['starting', 'pausing'].includes(scanStatus) && !state.isEngineRunning);
         const batches = scanStateReady ? state.batches : [];
         const totalBatches = batches.length;
         const currentBatch = scanStatus === 'completed'
@@ -212,10 +244,13 @@ const createLocalService = ({
             : batches
                 .slice(0, Math.min(state.batchIndex, totalBatches))
                 .reduce((total, batch) => total + batch.length, 0);
+        const completedPoolBatches = scanStateReady ? state.completedBatchIndices.length : 0;
 
         return {
             scan: scanJob ? {
                 status: scanStatus,
+                canPause: ['starting', 'running'].includes(scanStatus),
+                canResume: scanStatus === 'paused' && hasResumableCheckpoint(),
                 targetFile: scanJob.targetFile,
                 sessionFolder: scanJob.sessionFolder,
                 sessionFolders: scanJob.sessionFolders,
@@ -225,12 +260,12 @@ const createLocalService = ({
                 error: scanJob.error,
                 logs: scanJob.logs,
                 currentBatch: scanJob.sessionFolders
-                    ? (scanStatus === 'completed' ? totalBatches : state.completedBatchIndices.length)
+                    ? (scanStatus === 'completed' ? totalBatches : completedPoolBatches)
                     : currentBatch,
                 totalBatches,
                 completedBatches: scanJob.sessionFolders
-                    ? (scanStatus === 'completed' ? totalBatches : state.completedBatchIndices.length)
-                    : currentBatch,
+                    ? (scanStatus === 'completed' ? totalBatches : completedPoolBatches)
+                    : (scanStatus === 'completed' ? totalBatches : Math.min(state.batchIndex, totalBatches)),
                 completedTargets: scanJob.sessionFolders && scanStatus !== 'completed'
                     ? (scanStateReady ? state.completedBatchIndices : []).reduce(
                         (total, index) => total + (batches[index]?.length || 0),
@@ -405,8 +440,11 @@ const createLocalService = ({
         scanJob = {
             status: 'starting',
             targetFile,
+            batchSize,
             sessionFolder: multiSender ? null : sessionFolder,
             sessionFolders: multiSender ? selectedSenders : null,
+            resumeOptions: { targetFile, sessionFolders: multiSender ? selectedSenders : null, sessionFolder, batchSize },
+            pauseControl: { pauseRequested: false },
             senderStatuses: multiSender
                 ? Object.fromEntries(selectedSenders.map(folder => [folder, { status: 'checking' }]))
                 : null,
@@ -437,7 +475,8 @@ const createLocalService = ({
                 }
             } : { sessionFolder }),
             batchSize,
-            resume
+            resume,
+            pauseControl: scanJob.pauseControl
         })).then(result => {
             scanJob.status = result?.status || 'completed';
             stopRecordingLogs();
@@ -447,6 +486,39 @@ const createLocalService = ({
             stopRecordingLogs();
         });
         return { status: 'starting' };
+    };
+
+    const pauseScan = () => {
+        if (!scanJob) throw createError('No scan is available to pause.', 409);
+        if (scanJob.status === 'pausing' || scanJob.status === 'paused') {
+            return { status: scanJob.status };
+        }
+        if (!['starting', 'running'].includes(scanJob.status)) {
+            throw createError('No active scan can be paused.', 409);
+        }
+        scanJob.pauseControl.pauseRequested = true;
+        scanJob.status = 'pausing';
+        return { status: 'pausing' };
+    };
+
+    const resumeScan = () => {
+        if (scanJob?.status !== 'paused') {
+            throw createError('Only a paused scan can be resumed.', 409);
+        }
+        if (!hasResumableCheckpoint()) {
+            throw createError('The saved scan checkpoint is unavailable or invalid. Start a new scan instead.', 409);
+        }
+        const options = scanJob.resumeOptions;
+        let resumeOptions = options;
+        if (Array.isArray(options.sessionFolders)) {
+            const senders = listSenders();
+            const selectedSenders = options.sessionFolders.filter(folder => senders.includes(folder));
+            resumeOptions = {
+                ...options,
+                sessionFolders: selectedSenders.length ? selectedSenders : senders
+            };
+        }
+        return startScan({ ...resumeOptions, resume: true });
     };
 
     const requestShutdown = async ({ confirm } = {}) => {
@@ -527,7 +599,9 @@ const createLocalService = ({
         getUpdateAvailability,
         getTargetNames,
         getTargets,
+        pauseScan,
         refreshUpdateHint,
+        resumeScan,
         requestShutdown,
         restartApplication,
         startScan,

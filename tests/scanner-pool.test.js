@@ -10,6 +10,7 @@ const { runScanner, runScannerPool } = require('../core/scanner');
 const resetScanState = batches => Object.assign(state, {
     isEngineRunning: true,
     activeTargetFile: '',
+    activeTargetHash: null,
     batchIndex: 0,
     batches,
     multiSenderScan: true,
@@ -78,6 +79,54 @@ test('scanner reports per-target progress while checking profiles', async () => 
     assert.equal(state.targetPersonal.length, 2);
 });
 
+test('single sender scan pauses after its active batch and saves a resumable checkpoint', async t => {
+    const originalDirectory = process.cwd();
+    const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'cekbio-scanner-pause-'));
+    t.after(() => {
+        process.chdir(originalDirectory);
+        fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+    });
+    process.chdir(temporaryDirectory);
+    resetScanState([['10000001'], ['10000002']]);
+    state.activeTargetFile = 'targets.txt';
+    state.multiSenderScan = false;
+    state.activeTargetHash = 'target-hash';
+    const pauseControl = { pauseRequested: false };
+    let calls = 0;
+
+    const result = await runScanner({
+        onWhatsApp: async (...jids) => {
+            calls++;
+            pauseControl.pauseRequested = true;
+            return registeredResults(...jids);
+        },
+        query: async () => null,
+        fetchStatus: async () => ({})
+    }, {
+        pauseControl,
+        finalize: false,
+        closeSocket: false,
+        logCompletion: false,
+        logErrors: false
+    });
+
+    assert.deepEqual(result, { status: 'paused', completedBatches: 1 });
+    assert.equal(calls, 1);
+    assert.equal(state.batchIndex, 1);
+    assert.deepEqual(JSON.parse(fs.readFileSync(
+        path.join('checkpoint', 'checkpoint_targets.json'),
+        'utf8'
+    )), {
+        batchIndex: 1,
+        totalBatches: 2,
+        targetHash: 'target-hash'
+    });
+    assert.equal(JSON.parse(fs.readFileSync(
+        path.join('result-data', 'target_unregistered_targets.json'),
+        'utf8'
+    )).length, 1);
+});
+
 test('sender pool scans batches concurrently and combines their results', async () => {
     resetScanState([['10000001'], ['10000002'], ['10000003'], ['10000004']]);
     let active = 0;
@@ -103,6 +152,78 @@ test('sender pool scans batches concurrently and combines their results', async 
         ['+10000001', '+10000002', '+10000003', '+10000004']
     );
     assert.equal(state.statistics.unregistered, 4);
+});
+
+test('sender pool finishes active batches then pauses without dispatching pending batches', async t => {
+    const originalDirectory = process.cwd();
+    const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'cekbio-scanner-pool-pause-'));
+    t.after(() => {
+        process.chdir(originalDirectory);
+        fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+    });
+    process.chdir(temporaryDirectory);
+    resetScanState([['10000001'], ['10000002'], ['10000003'], ['10000004']]);
+    state.activeTargetFile = 'targets.txt';
+    state.activeTargetHash = 'target-hash';
+    const pauseControl = { pauseRequested: false };
+    let calls = 0;
+    const makeSocket = async (...jids) => {
+        calls++;
+        if (calls === 2) pauseControl.pauseRequested = true;
+        return registeredResults(...jids);
+    };
+
+    const result = await runScannerPool([
+        makeWorker('session_1', makeSocket),
+        makeWorker('session_2', makeSocket)
+    ], { pauseControl });
+
+    assert.equal(result.status, 'paused');
+    assert.equal(result.completedBatches, 2);
+    assert.equal(result.remainingBatches, 2);
+    assert.equal(calls, 2);
+    assert.equal(state.targetUnregistered.length, 2);
+    assert.deepEqual(JSON.parse(fs.readFileSync(
+        path.join('checkpoint', 'checkpoint_targets.json'),
+        'utf8'
+    )), {
+        batchIndex: 2,
+        totalBatches: 4,
+        targetHash: 'target-hash',
+        multiSender: true,
+        targetFile: 'targets.txt',
+        batchSize: 1,
+        completedBatchIndices: [0, 1]
+    });
+});
+
+test('pause arriving during the last batch resolves as completed, not paused', async () => {
+    resetScanState([['10000001']]);
+    const pauseControl = { pauseRequested: false };
+    const result = await runScannerPool([
+        makeWorker('session_1', async (...jids) => {
+            pauseControl.pauseRequested = true;
+            return registeredResults(...jids);
+        })
+    ], {
+        pauseControl,
+        persist() {}
+    });
+
+    assert.equal(result.status, 'completed');
+    assert.equal(state.targetUnregistered.length, 1);
+});
+
+test('pause is not reported as successful when checkpoint persistence fails', async () => {
+    resetScanState([['10000001']]);
+
+    await assert.rejects(
+        runScannerPool([], {
+            pauseControl: { pauseRequested: true },
+            persist: () => false
+        }),
+        /Could not save scan results and checkpoint/
+    );
 });
 
 test('failed batch is retried on a healthy sender without committing partial results', async () => {
