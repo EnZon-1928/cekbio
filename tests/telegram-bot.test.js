@@ -13,11 +13,13 @@ const {
     createActionRegistry,
     createActiveTargetSelection,
     createDashboardPresenter,
+    createScanCompletionNotifier,
     acknowledgeCallbackQuery,
     acknowledgeCallbackQueryWithoutWaiting,
     editShutdownNotice,
     formatSenderButtonLabel,
     formatScanProgress,
+    formatScanCompletionNotice,
     formatResultButtonLabel,
     formatSenderSessionsText,
     formatTargetButtonLabel,
@@ -539,6 +541,76 @@ test('scan progress includes confirmed targets, active batch work, and terminal 
         status: 'pausing',
         targetFile: 'targets.txt'
     }), /Finishing active batch\(es\) and saving the checkpoint/);
+});
+
+test('scan completion notifications are sent once when a watched scan reaches a terminal state', async () => {
+    let scan = { status: 'running' };
+    const notifications = [];
+    const timers = [];
+    const notifier = createScanCompletionNotifier({
+        getScan: () => scan,
+        notify: async (...args) => notifications.push(args),
+        schedule: callback => {
+            const timer = { callback };
+            timers.push(timer);
+            return timer;
+        },
+        cancel: () => {}
+    });
+
+    await notifier.watch(123);
+    assert.equal(timers.length, 1);
+    assert.equal(notifications.length, 0);
+
+    scan = {
+        status: 'completed',
+        targetFile: 'targets.txt',
+        completedTargets: 10,
+        totalTargets: 10
+    };
+    await timers[0].callback();
+    await timers[0].callback();
+
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0][0], '123');
+    assert.match(formatScanCompletionNotice(notifications[0][1]), /Scan completed successfully/);
+    assert.match(formatScanCompletionNotice(notifications[0][1]), /Targets confirmed: 10 \/ 10/);
+    notifier.stop();
+});
+
+test('scan completion notification retries delivery failures and can be stopped', async () => {
+    let scan = { status: 'paused', targetFile: 'targets.txt' };
+    let attempts = 0;
+    const errors = [];
+    const timers = [];
+    const notifier = createScanCompletionNotifier({
+        getScan: () => scan,
+        notify: async () => {
+            attempts++;
+            if (attempts === 1) throw new Error('Telegram unavailable');
+        },
+        onError: (error, chatId) => errors.push([error.message, chatId]),
+        schedule: callback => {
+            const timer = { callback, cancelled: false };
+            timers.push(timer);
+            return timer;
+        },
+        cancel: timer => { timer.cancelled = true; }
+    });
+
+    await notifier.watch(456);
+    assert.equal(attempts, 1);
+    assert.deepEqual(errors, [['Telegram unavailable', '456']]);
+    await timers[0].callback();
+    assert.equal(attempts, 2);
+
+    scan = { status: 'running' };
+    await notifier.watch(789);
+    const pendingTimer = timers.at(-1);
+    notifier.stop();
+    assert.equal(pendingTimer.cancelled, true);
+    await pendingTimer.callback();
+    assert.equal(attempts, 2);
 });
 
 test('scan progress shows at most three sender details and reports the remainder', () => {

@@ -9,6 +9,7 @@ const ACTION_TTL_MS = 10 * 60 * 1000;
 const LIST_PAGE_SIZE = 6;
 const PAIRING_REFRESH_INTERVAL_MS = 500;
 const PAIRING_REFRESH_MAX_DURATION_MS = 185000;
+const SCAN_COMPLETION_POLL_INTERVAL_MS = 2000;
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 const MAX_SCAN_SENDER_DETAILS = 3;
 const BUTTON_STYLE = Object.freeze({
@@ -21,6 +22,7 @@ const TELEGRAM_COMMANDS = Object.freeze([
     { command: 'shutdown', description: 'Stop the local application' }
 ].map(command => Object.freeze(command)));
 const SHUTDOWN_NOTICE = 'The local cekbio application is shutting down.';
+const SCAN_TERMINAL_STATUSES = new Set(['completed', 'paused', 'failed']);
 
 const editShutdownNotice = updateMessage => updateMessage(
     SHUTDOWN_NOTICE,
@@ -195,6 +197,76 @@ const formatScanProgress = scan => {
     return text.length <= TELEGRAM_MAX_MESSAGE_LENGTH
         ? text
         : limitText(text, TELEGRAM_MAX_MESSAGE_LENGTH);
+};
+
+const formatScanCompletionNotice = scan => {
+    const statusText = {
+        completed: 'completed successfully.',
+        paused: 'paused. Progress is saved and can be resumed.',
+        failed: 'failed.'
+    }[scan.status];
+    const lines = [
+        `🔎 Scan ${statusText}`,
+        `Target: ${limitText(scan.targetFile, 180)}`
+    ];
+    if (Number.isSafeInteger(scan.completedTargets) && Number.isSafeInteger(scan.totalTargets)) {
+        lines.push(`Targets confirmed: ${scan.completedTargets} / ${scan.totalTargets}`);
+    }
+    if (scan.status === 'failed' && scan.error) {
+        lines.push(`Error: ${limitText(scan.error, 800)}`);
+    }
+    return lines.join('\n');
+};
+
+const createScanCompletionNotifier = ({
+    getScan,
+    notify,
+    onError = error => console.error('Telegram scan completion notification failed:', error.message),
+    intervalMs = SCAN_COMPLETION_POLL_INTERVAL_MS,
+    schedule = (callback, delay) => setTimeout(callback, delay),
+    cancel = timer => clearTimeout(timer)
+}) => {
+    const watchers = new Map();
+
+    const clear = (chatId, watcher) => {
+        if (watcher.timer) cancel(watcher.timer);
+        if (watchers.get(chatId) === watcher) watchers.delete(chatId);
+    };
+
+    const scheduleNext = (chatId, watcher) => {
+        watcher.timer = schedule(() => check(chatId, watcher), intervalMs);
+        watcher.timer?.unref?.();
+    };
+
+    const check = async (chatId, watcher) => {
+        if (watchers.get(chatId) !== watcher) return;
+        try {
+            const scan = getScan();
+            if (!scan || !SCAN_TERMINAL_STATUSES.has(scan.status)) {
+                scheduleNext(chatId, watcher);
+                return;
+            }
+            await notify(chatId, scan);
+            clear(chatId, watcher);
+        } catch (error) {
+            onError(error, chatId);
+            scheduleNext(chatId, watcher);
+        }
+    };
+
+    return {
+        watch(chatId) {
+            const key = String(chatId);
+            const previous = watchers.get(key);
+            if (previous) clear(key, previous);
+            const watcher = { timer: null };
+            watchers.set(key, watcher);
+            return check(key, watcher);
+        },
+        stop() {
+            for (const [chatId, watcher] of watchers) clear(chatId, watcher);
+        }
+    };
 };
 
 const createActiveTargetSelection = () => {
@@ -501,6 +573,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     const senderViewRefreshes = new Map();
     const senderViewTokens = new Map();
     const senderHealthErrors = new Set();
+    const scanCompletionNotificationErrors = new Set();
     let updateHintRefreshTimer = null;
     const scanProgressRefreshes = new Map();
     const scanProgressErrors = new Set();
@@ -531,6 +604,26 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
         );
         return keyboard;
     };
+
+    const scanCompletionNotifier = createScanCompletionNotifier({
+        getScan: () => service.getStatus().scan,
+        notify: (chatId, scan) => {
+            const keyboard = new InlineKeyboard();
+            actionButton(keyboard, 'View scan progress', { type: 'scan-progress-refresh' });
+            return bot.api.sendMessage(chatId, formatScanCompletionNotice(scan), {
+                reply_markup: keyboard
+            }).then(message => {
+                scanCompletionNotificationErrors.delete(String(chatId));
+                return message;
+            });
+        },
+        onError: (error, chatId) => {
+            const key = String(chatId);
+            if (scanCompletionNotificationErrors.has(key)) return;
+            scanCompletionNotificationErrors.add(key);
+            console.error('Telegram scan completion notification failed:', error.message);
+        }
+    });
 
     const clearSenderViewRefresh = chatId => {
         const refresh = senderViewRefreshes.get(chatId);
@@ -1006,6 +1099,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
             batchSize: selection.batchSize,
             resume
         });
+        void scanCompletionNotifier.watch(ctx.chat.id);
         const { scan } = service.getStatus();
         await showScanProgress(ctx, scan || {
             status: 'starting',
@@ -1135,6 +1229,7 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
                 return;
             case 'resume-scan':
                 service.resumeScan();
+                void scanCompletionNotifier.watch(ctx.chat.id);
                 {
                     const { scan } = service.getStatus();
                     await showScanProgress(ctx, scan);
@@ -1457,6 +1552,8 @@ const startTelegramBot = async ({ token, ownerId, service, onError = () => {} })
     return {
         bot,
         stop: () => {
+            scanCompletionNotifier.stop();
+            scanCompletionNotificationErrors.clear();
             if (updateHintRefreshTimer) clearInterval(updateHintRefreshTimer);
             updateHintRefreshTimer = null;
             for (const refresh of pairingRefreshTimers.values()) {
@@ -1495,6 +1592,8 @@ module.exports = {
     getTargetButtonStyle,
     formatSenderSessionsText,
     formatScanProgress,
+    formatScanCompletionNotice,
+    createScanCompletionNotifier,
     formatResultButtonLabel,
     formatTargetButtonLabel,
     formatMainMenuText,
