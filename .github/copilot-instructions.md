@@ -29,3 +29,15 @@
 - Check the existing CLI and Telegram behavior when changing shared code.
 - Run available syntax checks and focused automated tests.
 - When working in WSL/Linux, if the matching Windows working copy exists (`C:\Users\izhar\cekbio`), synchronize each changed project file to that copy as part of the task. Before copying, inspect differences and preserve any Windows-only edits; do not overwrite conflicting changes without resolving them. Copy only relevant changed source/documentation files, never `node_modules`, `.env`, sender sessions, credentials, target lists, or scan results. Verify the synchronized files match after copying.
+
+## Context Mode
+
+Use Context Mode when it materially reduces how much raw data needs to enter the conversation:
+
+- For requests to count, search, filter, compare, aggregate, or summarize many files, logs, command results, or fetched pages, prefer `ctx_execute`, `ctx_execute_file`, `ctx_batch_execute`, or `ctx_fetch_and_index` as appropriate. Compute inside the sandbox and return only the requested answer or a concise summary.
+- Choose the tool by data shape: `ctx_execute` for a short script or calculation; `ctx_execute_file` to analyze one file without exposing its contents; `ctx_batch_execute` for several shell commands or sources that should be gathered and queried together; `ctx_fetch_and_index` followed by `ctx_search` for web sources or reusable reference material.
+- For focused code navigation, small outputs, and edits, use the normal workspace tools. Do not route code that must be edited through a sandbox, and do not use Context Mode just to add an unnecessary tool call.
+- Before using a Context Mode tool, verify that the tool is actually available in this chat. If unavailable, say which tool is missing. When the user specifically asks for Context Mode, do not silently substitute Bash, Git, or another tool and present it as a Context Mode run.
+- If the user asks for `ctx stats` or Context Mode statistics, call `ctx_stats` and report its result accurately. Do not substitute session/Git metadata. Distinguish per-session calls and savings from the cross-adapter `Skipped` filter; stats are Context Mode estimates, not official Copilot billing.
+- Do not claim a task saved tokens unless `ctx_stats` reports savings. Calling `ctx_stats` only reads statistics; it does not itself save context.
+- Keep sender credentials, WhatsApp sessions, target lists, and scan results out of tool output and indexing unless explicitly needed; never print or index sensitive data unnecessarily.

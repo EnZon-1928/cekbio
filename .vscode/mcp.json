@@ -1,7 +1,10 @@
 {
-  "servers": {
-    "context-mode": {
-      "command": "context-mode"
-    }
-  }
+	"inputs": [],
+	"servers": {
+		"my-mcp-server-065ba508": {
+			"type": "stdio",
+			"command": "/home/izhchyt12/.nvm/versions/node/v22.22.1/bin/context-mode",
+			"args": []
+		}
+	}
 }
