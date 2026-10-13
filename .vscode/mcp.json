@@ -1,6 +1,6 @@
 {
 	"servers": {
-		"my-mcp-server-9a753bf0": {
+		"context-mode": {
 			"type": "stdio",
 			"command": "/home/izhchyt12/.nvm/versions/node/v22.22.1/bin/context-mode",
 			"args": []
