@@ -7,3 +7,4 @@ node_modules/
 /result-data/
 /checkpoint/
 /logs/
+.github/context-mode

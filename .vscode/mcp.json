@@ -1,7 +1,10 @@
 {
-  "servers": {
-    "context-mode": {
-      "command": "context-mode"
-    }
-  }
+	"servers": {
+		"context-mode": {
+			"type": "stdio",
+			"command": "/home/izhchyt12/.nvm/versions/node/v22.22.1/bin/context-mode",
+			"args": []
+		}
+	},
+	"inputs": []
 }
